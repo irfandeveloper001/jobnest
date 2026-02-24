@@ -1,6 +1,6 @@
 import { json } from '@remix-run/node';
 import { Form, useActionData, useLoaderData } from '@remix-run/react';
-import { AdminNav } from '../components/Nav';
+import AppLayout from '../components/AppLayout';
 import { apiFetch } from '../lib/api.server';
 import { requireAdmin } from '../lib/session.server';
 
@@ -9,16 +9,16 @@ export async function loader({ request }) {
 
   try {
     const sources = await apiFetch(request, '/api/admin/job-sources');
-    return json({ sources: sources.data || [] });
+    return json({ sources: sources.data || [], role: 'admin' });
   } catch (error) {
-    return json({ error: error.message, sources: [] }, { status: error.status || 500 });
+    return json({ sources: [], role: 'admin', error: error.message }, { status: error.status || 500 });
   }
 }
 
 export async function action({ request }) {
   await requireAdmin(request);
-
   const formData = await request.formData();
+
   const id = String(formData.get('id') || '');
   const name = String(formData.get('name') || '');
   const baseUrl = String(formData.get('base_url') || '');
@@ -28,18 +28,18 @@ export async function action({ request }) {
   try {
     await apiFetch(request, `/api/admin/job-sources/${id}`, {
       method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name,
         base_url: baseUrl,
         sync_interval_minutes: syncInterval,
         enabled,
       }),
-      headers: { 'Content-Type': 'application/json' },
     });
 
-    return json({ ok: true, message: `Source #${id} updated.` });
+    return json({ success: `Source #${id} updated.` });
   } catch (error) {
-    return json({ ok: false, error: error.message }, { status: error.status || 400 });
+    return json({ error: error.message || 'Update failed.' }, { status: error.status || 400 });
   }
 }
 
@@ -48,65 +48,68 @@ export default function AdminJobSourcesRoute() {
   const actionData = useActionData();
 
   return (
-    <div>
-      <h1>Admin Job Sources</h1>
-      <AdminNav />
+    <AppLayout title="Job Sources" subtitle="Configure source availability and sync cadence." role={data.role}>
+      {data.error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{data.error}</div>
+      ) : null}
+      {actionData?.error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{actionData.error}</div>
+      ) : null}
+      {actionData?.success ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{actionData.success}</div>
+      ) : null}
 
-      {data.error ? <div className="banner error">{data.error}</div> : null}
-      {actionData?.ok ? <div className="banner ok">{actionData.message}</div> : null}
-      {actionData?.error ? <div className="banner error">{actionData.error}</div> : null}
+      <section className="space-y-4">
+        {data.sources.length ? data.sources.map((source) => (
+          <article key={source.id} className="rounded-2xl border border-slate-200 bg-white p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">{source.name}</h2>
+                <p className="text-sm text-slate-500">Key: {source.key}</p>
+              </div>
+            </div>
 
-      <div className="panel">
-        {data.sources.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Key</th>
-                <th>Config</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.sources.map((source) => (
-                <tr key={source.id}>
-                  <td>{source.id}</td>
-                  <td>{source.key}</td>
-                  <td>
-                    <Form method="post" className="grid">
-                      <input type="hidden" name="id" value={source.id} />
-                      <label>
-                        Name
-                        <input type="text" name="name" defaultValue={source.name || ''} />
-                      </label>
-                      <label>
-                        Base URL
-                        <input type="text" name="base_url" defaultValue={source.base_url || ''} />
-                      </label>
-                      <label>
-                        Sync interval (minutes)
-                        <input
-                          type="number"
-                          name="sync_interval_minutes"
-                          min="1"
-                          max="1440"
-                          defaultValue={source.sync_interval_minutes || 15}
-                        />
-                      </label>
-                      <label className="row">
-                        <input type="checkbox" name="enabled" defaultChecked={Boolean(source.enabled)} />
-                        Enabled
-                      </label>
-                      <button type="submit">Update source</button>
-                    </Form>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <div className="muted">No job sources available.</div>
+            <Form method="post" className="grid gap-4 sm:grid-cols-2">
+              <input type="hidden" name="id" value={source.id} />
+
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Name</span>
+                <input name="name" type="text" defaultValue={source.name || ''} className="w-full rounded-xl border-slate-300" />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Sync interval (minutes)</span>
+                <input
+                  name="sync_interval_minutes"
+                  type="number"
+                  min="1"
+                  max="1440"
+                  defaultValue={source.sync_interval_minutes || 15}
+                  className="w-full rounded-xl border-slate-300"
+                />
+              </label>
+
+              <label className="block sm:col-span-2">
+                <span className="mb-1 block text-sm font-medium text-slate-700">Base URL</span>
+                <input name="base_url" type="text" defaultValue={source.base_url || ''} className="w-full rounded-xl border-slate-300" />
+              </label>
+
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+                <input name="enabled" type="checkbox" defaultChecked={Boolean(source.enabled)} className="rounded border-slate-300" />
+                Enabled
+              </label>
+
+              <div className="sm:col-span-2">
+                <button type="submit" className="rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700">
+                  Update Source
+                </button>
+              </div>
+            </Form>
+          </article>
+        )) : (
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">No job sources available.</div>
         )}
-      </div>
-    </div>
+      </section>
+    </AppLayout>
   );
 }

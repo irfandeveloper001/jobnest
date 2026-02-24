@@ -1,6 +1,6 @@
 import { json } from '@remix-run/node';
 import { useLoaderData } from '@remix-run/react';
-import { AdminNav } from '../components/Nav';
+import AppLayout from '../components/AppLayout';
 import { apiFetch } from '../lib/api.server';
 import { requireAdmin } from '../lib/session.server';
 
@@ -18,9 +18,10 @@ export async function loader({ request }) {
       metrics: metrics.data || {},
       usersTotal: users.total || 0,
       sourcesTotal: sources.data?.length || 0,
+      role: 'admin',
     });
   } catch (error) {
-    return json({ error: error.message, metrics: {}, usersTotal: 0, sourcesTotal: 0 }, { status: error.status || 500 });
+    return json({ metrics: {}, usersTotal: 0, sourcesTotal: 0, role: 'admin', error: error.message }, { status: error.status || 500 });
   }
 }
 
@@ -28,31 +29,27 @@ export default function AdminDashboardRoute() {
   const data = useLoaderData();
 
   return (
-    <div>
-      <h1>Admin Dashboard</h1>
-      <AdminNav />
+    <AppLayout title="Admin Dashboard" subtitle="Operational visibility across the platform." role={data.role}>
+      {data.error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{data.error}</div>
+      ) : null}
 
-      {data.error ? <div className="banner error">{data.error}</div> : null}
-
-      <div className="grid two">
-        <div className="panel">
-          <div className="muted">Registered users</div>
-          <h2>{data.usersTotal}</h2>
-        </div>
-        <div className="panel">
-          <div className="muted">Job sources</div>
-          <h2>{data.sourcesTotal}</h2>
-        </div>
-      </div>
-
-      <div className="grid two">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <article className="rounded-2xl border border-slate-200 bg-white p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Users</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{data.usersTotal}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Job Sources</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{data.sourcesTotal}</p>
+        </article>
         {Object.entries(data.metrics || {}).map(([key, value]) => (
-          <div className="panel" key={key}>
-            <div className="muted">{key.replaceAll('_', ' ')}</div>
-            <h2>{value}</h2>
-          </div>
+          <article key={key} className="rounded-2xl border border-slate-200 bg-white p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{key.replaceAll('_', ' ')}</p>
+            <p className="mt-2 text-3xl font-black text-slate-900">{value}</p>
+          </article>
         ))}
-      </div>
-    </div>
+      </section>
+    </AppLayout>
   );
 }

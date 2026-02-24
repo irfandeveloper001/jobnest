@@ -1,6 +1,6 @@
 import { json } from '@remix-run/node';
 import { useLoaderData } from '@remix-run/react';
-import { AdminNav } from '../components/Nav';
+import AppLayout from '../components/AppLayout';
 import { apiFetch } from '../lib/api.server';
 import { requireAdmin } from '../lib/session.server';
 
@@ -9,9 +9,9 @@ export async function loader({ request }) {
 
   try {
     const logs = await apiFetch(request, '/api/admin/email-logs');
-    return json({ logs });
+    return json({ logs, role: 'admin' });
   } catch (error) {
-    return json({ error: error.message, logs: null }, { status: error.status || 500 });
+    return json({ logs: null, role: 'admin', error: error.message }, { status: error.status || 500 });
   }
 }
 
@@ -20,40 +20,41 @@ export default function AdminEmailLogsRoute() {
   const logs = data.logs?.data || [];
 
   return (
-    <div>
-      <h1>Admin Email Logs</h1>
-      <AdminNav />
+    <AppLayout title="Email Logs" subtitle="Audit queued delivery outcomes." role={data.role}>
+      {data.error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{data.error}</div>
+      ) : null}
 
-      {data.error ? <div className="banner error">{data.error}</div> : null}
-
-      <div className="panel">
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         {logs.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>To</th>
-                <th>Subject</th>
-                <th>Status</th>
-                <th>Sent At</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log) => (
-                <tr key={log.id}>
-                  <td>{log.id}</td>
-                  <td>{log.to_email}</td>
-                  <td>{log.subject}</td>
-                  <td><span className="badge">{log.status}</span></td>
-                  <td>{log.sent_at || '-'}</td>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">ID</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">To</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Subject</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Sent At</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {logs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="px-4 py-3 text-sm text-slate-700">{log.id}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{log.to_email}</td>
+                    <td className="px-4 py-3 text-sm text-slate-900">{log.subject}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{log.status}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{log.sent_at || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
-          <div className="muted">No email logs available.</div>
+          <div className="p-5 text-sm text-slate-600">No email logs available.</div>
         )}
-      </div>
-    </div>
+      </section>
+    </AppLayout>
   );
 }

@@ -29,8 +29,8 @@ docker compose up -d
 ```
 
 Services:
-- MySQL: `127.0.0.1:3306`
-- Redis: `127.0.0.1:6379`
+- MySQL: `127.0.0.1:3307`
+- Redis: `127.0.0.1:6380`
 - MailHog SMTP: `127.0.0.1:1025`
 - MailHog UI: `http://127.0.0.1:8025`
 
@@ -69,7 +69,7 @@ Required values:
 ```env
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
-DB_PORT=3306
+DB_PORT=3307
 DB_DATABASE=jobnest
 DB_USERNAME=jobnest
 DB_PASSWORD=jobnest
@@ -78,7 +78,7 @@ CACHE_DRIVER=redis
 QUEUE_CONNECTION=redis
 SESSION_DRIVER=redis
 REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
+REDIS_PORT=6380
 
 MAIL_MAILER=smtp
 MAIL_HOST=127.0.0.1
@@ -97,6 +97,20 @@ npm run dev
 ```
 
 Default Remix URL: `http://127.0.0.1:3000`
+
+Tailwind is preconfigured through the Remix/PostCSS pipeline:
+- `apps/web/tailwind.config.js`
+- `apps/web/postcss.config.js`
+- `apps/web/app/tailwind.css`
+- `apps/web/app/styles/global.css`
+
+The UI uses:
+- Inter font
+- Material Symbols Outlined
+- Emerald primary theme (`#16A34A`)
+- Shared layouts:
+  - `apps/web/app/components/PublicLayout.jsx`
+  - `apps/web/app/components/AppLayout.jsx`
 
 ### Remix Environment (`apps/web/.env`)
 
@@ -147,3 +161,30 @@ PORT=3000
 
 - `composer.json` targets Laravel 11 APIs.
 - If optional IMAP package `webklex/laravel-imap` is installed, `inbox:sync` can be extended for real mailbox ingestion.
+
+## Frontend Route File List
+
+Public:
+- `apps/web/app/routes/_index.jsx`
+- `apps/web/app/routes/features.jsx`
+- `apps/web/app/routes/pricing.jsx`
+- `apps/web/app/routes/faq.jsx`
+- `apps/web/app/routes/contact.jsx`
+
+Auth:
+- `apps/web/app/routes/auth.sign-in.jsx`
+- `apps/web/app/routes/auth.sign-up.jsx`
+- `apps/web/app/routes/auth.forgot-password.jsx`
+- `apps/web/app/routes/auth.reset-password.jsx`
+
+User app:
+- `apps/web/app/routes/app.dashboard.jsx`
+- `apps/web/app/routes/app.jobs.jsx`
+- `apps/web/app/routes/app.jobs.$id.jsx`
+- `apps/web/app/routes/app.inbox.jsx`
+
+Admin:
+- `apps/web/app/routes/admin.dashboard.jsx`
+- `apps/web/app/routes/admin.users.jsx`
+- `apps/web/app/routes/admin.job-sources.jsx`
+- `apps/web/app/routes/admin.email-logs.jsx`

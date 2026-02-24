@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { renderToPipeableStream } from 'react-dom/server';
 import { RemixServer } from '@remix-run/react';
 import { createReadableStreamFromReadable } from '@remix-run/node';
-import isbot from 'isbot';
+import { isbot } from 'isbot';
 
 const ABORT_DELAY = 5_000;
 

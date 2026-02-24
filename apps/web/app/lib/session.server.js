@@ -26,10 +26,15 @@ export async function destroySession(session) {
   return sessionStorage.destroySession(session);
 }
 
-export async function createUserSession({ request, token, role, redirectTo }) {
+export async function createUserSession({ request, token, role, user, redirectTo }) {
   const session = await getSession(request);
   session.set('token', token);
   session.set('role', role || 'user');
+  if (user && typeof user === 'object') {
+    session.set('user_name', user.name || '');
+    session.set('user_email', user.email || '');
+    session.set('user_role', user.role || role || 'user');
+  }
 
   throw redirect(redirectTo || '/app/dashboard', {
     headers: {
@@ -42,12 +47,24 @@ export async function requireUser(request) {
   const session = await getSession(request);
   const token = session.get('token');
   const role = session.get('role') || 'user';
+  const userName = session.get('user_name') || '';
+  const userEmail = session.get('user_email') || '';
+  const userRole = session.get('user_role') || role;
 
   if (!token) {
     throw redirect('/auth/sign-in');
   }
 
-  return { token, role, session };
+  return {
+    token,
+    role,
+    session,
+    user: {
+      name: userName,
+      email: userEmail,
+      role: userRole,
+    },
+  };
 }
 
 export async function requireAdmin(request) {
