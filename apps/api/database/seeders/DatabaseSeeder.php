@@ -11,6 +11,13 @@ class DatabaseSeeder extends Seeder
         $this->call([
             JobSourceSeeder::class,
             AdminUserSeeder::class,
+            InboxDemoSeeder::class,
         ]);
+
+        if (env('SEED_LOCATIONS', false)) {
+            $this->call([
+                LocationsSeeder::class,
+            ]);
+        }
     }
 }

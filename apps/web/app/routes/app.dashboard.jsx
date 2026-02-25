@@ -1,4 +1,4 @@
-import { json } from '@remix-run/node';
+import { json, redirect } from '@remix-run/node';
 import { Form, Link, useLoaderData } from '@remix-run/react';
 import { apiFetch } from '../lib/api.server';
 import { requireUser } from '../lib/session.server';
@@ -74,6 +74,11 @@ function buildActivityFromMetrics(metrics) {
 
 export async function loader({ request }) {
   const auth = await requireUser(request);
+  const profilePayload = await apiFetch(request, '/api/profile').catch(() => null);
+  const profile = profilePayload?.data || {};
+  if (profilePayload && !profile.profile_completed) {
+    throw redirect('/app/profile');
+  }
 
   const metricsPayload = await apiFetch(request, '/api/metrics').catch(() => null);
   const metrics = normalizeMetrics(metricsPayload);
@@ -171,6 +176,10 @@ export default function AppDashboardRoute() {
               <span className="material-symbols-outlined text-[16px]">bar_chart</span>
               Analytics
             </Link>
+            <Link to="/app/profile" className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">
+              <span className="material-symbols-outlined text-[16px]">person</span>
+              Profile
+            </Link>
           </nav>
 
           <div className="mt-auto space-y-3">
@@ -251,6 +260,9 @@ export default function AppDashboardRoute() {
               </Link>
               <Link to="/app/analytics" className="whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700">
                 Analytics
+              </Link>
+              <Link to="/app/profile" className="whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700">
+                Profile
               </Link>
               <Link to="/app/settings" className="whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700">
                 Settings

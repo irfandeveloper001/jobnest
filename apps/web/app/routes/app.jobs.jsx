@@ -1,9 +1,11 @@
-import { json } from '@remix-run/node';
-import { Form, Link, useLoaderData } from '@remix-run/react';
+import { json, redirect } from '@remix-run/node';
+import { Form, Link, useActionData, useLoaderData } from '@remix-run/react';
 import { apiFetch } from '../lib/api.server';
 import { requireUser } from '../lib/session.server';
 
 const DEFAULT_PER_PAGE = 10;
+const STATUS_OPTIONS = ['all', 'new', 'reviewed', 'applied', 'rejected'];
+const SOURCE_OPTIONS = ['all', 'arbeitnow', 'remotive'];
 
 function toPositiveInt(value, fallback) {
   const parsed = Number.parseInt(String(value || ''), 10);
@@ -11,12 +13,47 @@ function toPositiveInt(value, fallback) {
   return parsed;
 }
 
+function normalizeStatus(value) {
+  const normalized = String(value || 'all').trim().toLowerCase();
+  return STATUS_OPTIONS.includes(normalized) ? normalized : 'all';
+}
+
+function normalizeSource(value) {
+  const normalized = String(value || 'all').trim().toLowerCase();
+  return SOURCE_OPTIONS.includes(normalized) ? normalized : 'all';
+}
+
+function mapPublicStatus(status) {
+  const value = String(status || 'new').toLowerCase();
+  if (value === 'saved') return 'reviewed';
+  if (value === 'ignored' || value === 'archived') return 'rejected';
+  return value;
+}
+
+function normalizeJobRow(item, index) {
+  const sourceValue = item?.source && typeof item.source === 'object'
+    ? item.source.key || item.source.name
+    : item?.source;
+
+  return {
+    id: item?.id || `job-${index}`,
+    title: item?.title || 'Untitled role',
+    company: item?.company || item?.company_name || 'Unknown Company',
+    location: item?.location || 'Full-time • Remote',
+    source: sourceValue || 'direct',
+    status: mapPublicStatus(item?.status),
+    posted_at: item?.posted_at || null,
+  };
+}
+
 function normalizeJobsPayload(payload, page, perPage) {
-  const jobs = Array.isArray(payload)
+  const rows = Array.isArray(payload)
     ? payload
     : Array.isArray(payload?.data)
       ? payload.data
       : [];
+
+  const jobs = rows.map(normalizeJobRow);
 
   const metaPayload = payload?.meta || payload?.pagination || {};
   const currentPage = toPositiveInt(
@@ -75,27 +112,15 @@ function formatSource(source) {
 }
 
 function getStatusPill(status) {
-  const value = String(status || 'new').toLowerCase();
+  const value = mapPublicStatus(status);
   const map = {
     applied: {
       label: 'Applied',
       classes: 'bg-emerald-100 text-emerald-700',
     },
     reviewed: {
-      label: 'Interviewing',
+      label: 'Reviewed',
       classes: 'bg-amber-100 text-amber-700',
-    },
-    interviewing: {
-      label: 'Interviewing',
-      classes: 'bg-amber-100 text-amber-700',
-    },
-    offer: {
-      label: 'Offer',
-      classes: 'bg-cyan-100 text-cyan-700',
-    },
-    offered: {
-      label: 'Offer',
-      classes: 'bg-cyan-100 text-cyan-700',
     },
     rejected: {
       label: 'Rejected',
@@ -136,6 +161,9 @@ function getNoticeMessage(code) {
   const map = {
     'new-job': 'New Job assistant opened. Use filters below to find matching roles quickly.',
     'import-csv': 'CSV import will be enabled in a next step. You can still manage jobs from this page.',
+    imported: 'Jobs import completed.',
+    'status-updated': 'Job status updated.',
+    'sync-queued': 'Background sync queued. New matching jobs will appear shortly.',
     'bulk-status': 'Bulk status update needs row selection support. This action is queued for next update.',
     'bulk-archive': 'Bulk archive needs row selection support. This action is queued for next update.',
     'bulk-delete': 'Bulk delete needs row selection support. This action is queued for next update.',
@@ -149,8 +177,8 @@ export async function loader({ request }) {
   const url = new URL(request.url);
   const filters = {
     q: (url.searchParams.get('q') || '').trim(),
-    status: (url.searchParams.get('status') || 'all').trim().toLowerCase(),
-    source: (url.searchParams.get('source') || 'all').trim().toLowerCase(),
+    status: normalizeStatus(url.searchParams.get('status')),
+    source: normalizeSource(url.searchParams.get('source')),
     page: toPositiveInt(url.searchParams.get('page'), 1),
     per_page: toPositiveInt(url.searchParams.get('per_page'), DEFAULT_PER_PAGE),
     new_job: url.searchParams.get('new') === '1',
@@ -192,8 +220,86 @@ export async function loader({ request }) {
   });
 }
 
+export async function action({ request }) {
+  await requireUser(request);
+  const formData = await request.formData();
+  const intent = String(formData.get('intent') || '').trim().toLowerCase();
+  const currentFilters = {
+    q: String(formData.get('q') || '').trim(),
+    status: normalizeStatus(formData.get('status')),
+    source: normalizeSource(formData.get('source')),
+    page: toPositiveInt(formData.get('page'), 1),
+    per_page: toPositiveInt(formData.get('per_page'), DEFAULT_PER_PAGE),
+    new_job: String(formData.get('new') || '') === '1',
+    notice: '',
+  };
+
+  try {
+    if (intent === 'import_jobs') {
+      const keyword = String(formData.get('keyword') || '').trim();
+      const source = normalizeSource(formData.get('import_source'));
+      const onlyNew = String(formData.get('only_new') || 'true') === 'true';
+
+      await apiFetch(request, '/api/jobs/import', {
+        method: 'POST',
+        body: JSON.stringify({
+          keyword,
+          source: source === 'all' ? 'all' : source,
+          only_new: onlyNew,
+        }),
+      });
+
+      return redirect(buildLink(
+        {
+          ...currentFilters,
+          page: 1,
+          new_job: false,
+        },
+        {},
+        { newJob: false, notice: 'imported' },
+      ));
+    }
+
+    if (intent === 'update_status') {
+      const jobId = String(formData.get('job_id') || '').trim();
+      const status = normalizeStatus(formData.get('next_status'));
+      if (!jobId || status === 'all') {
+        return json({ error: 'Please choose a valid status.' }, { status: 400 });
+      }
+
+      await apiFetch(request, `/api/jobs/${jobId}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+
+      return redirect(buildLink(
+        currentFilters,
+        {},
+        { newJob: currentFilters.new_job, notice: 'status-updated' },
+      ));
+    }
+
+    if (intent === 'sync_now') {
+      await apiFetch(request, '/api/jobs/sync-now', {
+        method: 'POST',
+      });
+
+      return redirect(buildLink(
+        currentFilters,
+        {},
+        { newJob: currentFilters.new_job, notice: 'sync-queued' },
+      ));
+    }
+
+    return redirect(buildLink(currentFilters, {}, { newJob: currentFilters.new_job }));
+  } catch (error) {
+    return json({ error: error?.message || 'Unable to process jobs action.' }, { status: 400 });
+  }
+}
+
 export default function AppJobsRoute() {
   const { jobs, meta, filters, user, error, noticeMessage } = useLoaderData();
+  const actionData = useActionData();
   const displayName = user?.name || 'User';
   const initials = displayName
     .split(' ')
@@ -210,7 +316,7 @@ export default function AppJobsRoute() {
     (acc, job) => {
       const key = String(job?.status || 'new').toLowerCase();
       if (key === 'applied') acc.applied += 1;
-      if (key === 'reviewed' || key === 'interviewing') acc.interviews += 1;
+      if (key === 'reviewed') acc.interviews += 1;
       if (key === 'offer' || key === 'offered') acc.offers += 1;
       return acc;
     },
@@ -255,6 +361,10 @@ export default function AppJobsRoute() {
             <Link to="/app/analytics" className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100">
               <span className="material-symbols-outlined text-[16px]">bar_chart</span>
               Analytics
+            </Link>
+            <Link to="/app/profile" className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100">
+              <span className="material-symbols-outlined text-[16px]">person</span>
+              Profile
             </Link>
           </nav>
 
@@ -304,6 +414,22 @@ export default function AppJobsRoute() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <Form method="post">
+                <input type="hidden" name="intent" value="sync_now" />
+                <input type="hidden" name="q" value={filters.q} />
+                <input type="hidden" name="status" value={filters.status} />
+                <input type="hidden" name="source" value={filters.source} />
+                <input type="hidden" name="page" value={String(filters.page)} />
+                <input type="hidden" name="per_page" value={String(filters.per_page)} />
+                <input type="hidden" name="new" value={filters.new_job ? '1' : '0'} />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
+                >
+                  <span className="material-symbols-outlined text-[15px]">sync</span>
+                  Sync Now
+                </button>
+              </Form>
               <Link
                 to={buildLink(filters, {}, { notice: 'import-csv' })}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
@@ -335,38 +461,38 @@ export default function AppJobsRoute() {
                   Close
                 </Link>
               </div>
-              <Form method="get" action="/app/jobs" className="mt-3 grid gap-2 md:grid-cols-4">
+              <Form method="post" action="/app/jobs" className="mt-3 grid gap-2 md:grid-cols-4">
                 <input
                   type="text"
-                  name="q"
-                  defaultValue={filters.q}
+                  name="keyword"
                   placeholder="Try: Frontend, Laravel, React..."
                   className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500"
                 />
                 <select
-                  name="source"
-                  defaultValue={filters.source}
+                  name="import_source"
+                  defaultValue="all"
                   className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-600 outline-none focus:border-emerald-500"
                 >
                   <option value="all">Any source</option>
                   <option value="arbeitnow">Arbeitnow</option>
                   <option value="remotive">Remotive</option>
-                  <option value="linkedin">LinkedIn</option>
-                  <option value="indeed">Indeed</option>
                 </select>
                 <select
-                  name="status"
-                  defaultValue="new"
+                  name="only_new"
+                  defaultValue="true"
                   className="h-9 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-600 outline-none focus:border-emerald-500"
                 >
-                  <option value="new">Only new jobs</option>
-                  <option value="all">All statuses</option>
-                  <option value="applied">Applied</option>
-                  <option value="reviewed">Reviewed</option>
+                  <option value="true">Only new jobs</option>
+                  <option value="false">Include existing jobs</option>
                 </select>
                 <div className="flex items-center gap-2">
+                  <input type="hidden" name="intent" value="import_jobs" />
+                  <input type="hidden" name="q" value={filters.q} />
+                  <input type="hidden" name="status" value={filters.status} />
+                  <input type="hidden" name="source" value={filters.source} />
                   <input type="hidden" name="page" value="1" />
                   <input type="hidden" name="per_page" value={String(filters.per_page)} />
+                  <input type="hidden" name="new" value={filters.new_job ? '1' : '0'} />
                   <button
                     type="submit"
                     className="inline-flex h-9 w-full items-center justify-center rounded-lg bg-emerald-500 px-4 text-xs font-bold text-white hover:bg-emerald-600"
@@ -421,6 +547,7 @@ export default function AppJobsRoute() {
                 <option value="new">Status: New</option>
                 <option value="reviewed">Status: Reviewed</option>
                 <option value="applied">Status: Applied</option>
+                <option value="rejected">Status: Rejected</option>
               </select>
 
               <select
@@ -431,8 +558,6 @@ export default function AppJobsRoute() {
                 <option value="all">Company: All</option>
                 <option value="arbeitnow">Arbeitnow</option>
                 <option value="remotive">Remotive</option>
-                <option value="linkedin">LinkedIn</option>
-                <option value="indeed">Indeed</option>
               </select>
 
               <div className="flex items-center gap-2">
@@ -457,6 +582,9 @@ export default function AppJobsRoute() {
 
           {error ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>
+          ) : null}
+          {actionData?.error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{actionData.error}</div>
           ) : null}
 
           <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
@@ -512,9 +640,38 @@ export default function AppJobsRoute() {
                           </span>
                         </td>
                         <td className="px-3 py-2.5">
-                          <Link to={`/app/jobs/${job.id}`} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600">
-                            <span className="material-symbols-outlined text-[16px]">more_horiz</span>
-                          </Link>
+                          <div className="flex items-center gap-1">
+                            <Link to={`/app/jobs/${job.id}`} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+                              <span className="material-symbols-outlined text-[16px]">more_horiz</span>
+                            </Link>
+                            <Form method="post" className="flex items-center gap-1">
+                              <input type="hidden" name="intent" value="update_status" />
+                              <input type="hidden" name="job_id" value={String(job.id)} />
+                              <input type="hidden" name="q" value={filters.q} />
+                              <input type="hidden" name="status" value={filters.status} />
+                              <input type="hidden" name="source" value={filters.source} />
+                              <input type="hidden" name="page" value={String(filters.page)} />
+                              <input type="hidden" name="per_page" value={String(filters.per_page)} />
+                              <input type="hidden" name="new" value={filters.new_job ? '1' : '0'} />
+                              <select
+                                name="next_status"
+                                defaultValue={job.status}
+                                className="h-7 rounded-md border border-slate-200 bg-white px-1.5 text-[10px] font-medium text-slate-600 outline-none focus:border-emerald-500"
+                              >
+                                <option value="new">New</option>
+                                <option value="reviewed">Reviewed</option>
+                                <option value="applied">Applied</option>
+                                <option value="rejected">Rejected</option>
+                              </select>
+                              <button
+                                type="submit"
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 text-slate-500 hover:bg-slate-100"
+                                aria-label="Update status"
+                              >
+                                <span className="material-symbols-outlined text-[14px]">check</span>
+                              </button>
+                            </Form>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -630,6 +787,9 @@ export default function AppJobsRoute() {
             </Link>
             <Link to="/app/analytics" className="whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700">
               Analytics
+            </Link>
+            <Link to="/app/profile" className="whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700">
+              Profile
             </Link>
             <div className="ml-auto flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
               <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold text-slate-600">

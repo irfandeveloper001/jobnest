@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Application;
 use App\Models\EmailLog;
 use App\Models\InboxThread;
+use App\Models\Interview;
 use App\Models\Job;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -27,6 +28,7 @@ class MetricsController extends Controller
                 'applications_total' => Application::where('user_id', $userId)->count(),
                 'applications_queued' => Application::where('user_id', $userId)->where('status', 'queued')->count(),
                 'applications_sent' => Application::where('user_id', $userId)->where('status', 'sent')->count(),
+                'interviews_scheduled' => Interview::where('user_id', $userId)->where('status', 'upcoming')->count(),
                 'email_failures' => EmailLog::where('user_id', $userId)->where('status', 'failed')->count(),
                 'inbox_threads' => InboxThread::count(),
             ];

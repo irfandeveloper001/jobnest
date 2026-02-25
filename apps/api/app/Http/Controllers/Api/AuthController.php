@@ -30,7 +30,8 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $token,
-            'user' => $user,
+            'user' => $this->serializeUser($user),
+            'profile_completed' => $user->isProfileComplete(),
         ], 201);
     }
 
@@ -54,7 +55,8 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $token,
-            'user' => $user,
+            'user' => $this->serializeUser($user),
+            'profile_completed' => $user->isProfileComplete(),
         ]);
     }
 
@@ -73,8 +75,28 @@ class AuthController extends Controller
 
     public function me(Request $request): JsonResponse
     {
+        $user = $request->user();
+
         return response()->json([
-            'user' => $request->user(),
+            'user' => $this->serializeUser($user),
+            'profile_completed' => $user->isProfileComplete(),
         ]);
+    }
+
+    private function serializeUser(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+            'phone' => $user->phone,
+            'preferred_country_id' => $user->preferred_country_id,
+            'preferred_state_id' => $user->preferred_state_id,
+            'preferred_city_id' => $user->preferred_city_id,
+            'profile_completed' => $user->isProfileComplete(),
+            'profile_completed_at' => optional($user->profile_completed_at)->toISOString(),
+            'cv_uploaded_at' => optional($user->cv_uploaded_at)->toISOString(),
+        ];
     }
 }

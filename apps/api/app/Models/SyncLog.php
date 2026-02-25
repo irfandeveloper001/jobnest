@@ -12,6 +12,7 @@ class SyncLog extends Model
 
     protected $fillable = [
         'source_id',
+        'user_id',
         'status',
         'started_at',
         'ended_at',
@@ -33,5 +34,10 @@ class SyncLog extends Model
     public function source(): BelongsTo
     {
         return $this->belongsTo(JobSource::class, 'source_id');
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'user_id');
     }
 }

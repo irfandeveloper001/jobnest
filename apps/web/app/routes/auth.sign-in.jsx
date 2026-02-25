@@ -16,13 +16,14 @@ export async function action({ request }) {
       body: JSON.stringify({ email, password }),
     });
     const user = payload?.user || payload?.data || null;
+    const profileCompleted = Boolean(payload?.profile_completed ?? user?.profile_completed);
 
     return createUserSession({
       request,
       token: payload.token,
       role: user?.role || 'user',
       user,
-      redirectTo: user?.role === 'admin' ? '/admin/dashboard' : '/app/dashboard',
+      redirectTo: user?.role === 'admin' ? '/admin/dashboard' : (profileCompleted ? '/app/dashboard' : '/app/profile'),
     });
   } catch (error) {
     return json({ error: error.message || 'Unable to sign in.' }, { status: error.status || 400 });

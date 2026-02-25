@@ -62,6 +62,17 @@ Optional inbox monitor command:
 php artisan inbox:sync
 ```
 
+Seed global location dataset (countries/states/cities) from:
+`https://github.com/dr5hn/countries-states-cities-database`
+
+```bash
+php artisan db:seed --class=LocationsSeeder
+```
+
+Notes:
+- This downloads `countries.json`, `states.json`, and `cities.json` into `storage/app/location-seeds/`.
+- First run can take time because the cities dataset is large.
+
 ### Laravel Environment (`apps/api/.env`)
 
 Required values:
@@ -119,6 +130,25 @@ SERVICE_API_BASE_URL=http://localhost:8000
 SESSION_SECRET=replace-with-random-secret
 PORT=3000
 ```
+
+## 4) User Profile + Auto Job Sync Flow
+
+After sign-in/sign-up (user role):
+- If profile is incomplete, user is redirected to `http://127.0.0.1:3000/app/profile`.
+- Complete profile fields and upload CV on `/app/profile`.
+- Preferred location is now structured as `Country -> State -> City`.
+- CV upload and completed profile trigger `AutoJobSyncJob` on Redis queue.
+- Jobs are then available by default on `/app/jobs` without manual import/search.
+
+Required background worker:
+
+```bash
+cd apps/api
+php artisan queue:work redis --tries=3 --timeout=120
+```
+
+Optional manual sync from Jobs page:
+- Click `Sync Now` on `/app/jobs` to queue another profile-based sync run.
 
 ## Implemented Backend Features
 
@@ -181,7 +211,11 @@ User app:
 - `apps/web/app/routes/app.dashboard.jsx`
 - `apps/web/app/routes/app.jobs.jsx`
 - `apps/web/app/routes/app.jobs.$id.jsx`
+- `apps/web/app/routes/app.applications.jsx`
+- `apps/web/app/routes/app.interviews.jsx`
+- `apps/web/app/routes/app.analytics.jsx`
 - `apps/web/app/routes/app.inbox.jsx`
+- `apps/web/app/routes/app.profile.jsx`
 
 Admin:
 - `apps/web/app/routes/admin.dashboard.jsx`
