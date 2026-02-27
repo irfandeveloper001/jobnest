@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Mail\ApplicationSubmittedMail;
 use App\Models\Application;
+use App\Models\ApplicationEvent;
 use App\Models\EmailLog;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -77,6 +78,15 @@ class SendApplicationEmailJob implements ShouldQueue
         $application->update([
             'status' => 'sent',
             'emailed_at' => now(),
+        ]);
+
+        ApplicationEvent::create([
+            'application_id' => $application->id,
+            'type' => 'email_sent',
+            'payload' => [
+                'recipient_count' => $recipientEmails->count(),
+                'status' => 'sent',
+            ],
         ]);
     }
 }

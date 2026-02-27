@@ -14,7 +14,7 @@ class LocationsSeeder extends Seeder
     private const SOURCES = [
         'countries' => 'https://raw.githubusercontent.com/dr5hn/countries-states-cities-database/master/json/countries.json',
         'states' => 'https://raw.githubusercontent.com/dr5hn/countries-states-cities-database/master/json/states.json',
-        'cities' => 'https://raw.githubusercontent.com/dr5hn/countries-states-cities-database/master/json/cities.json',
+        'cities' => 'https://raw.githubusercontent.com/dr5hn/countries-states-cities-database/master/json/cities.json.gz',
     ];
 
     public function run(): void
@@ -36,14 +36,15 @@ class LocationsSeeder extends Seeder
     private function loadDataset(string $name): array
     {
         $disk = Storage::disk('local');
-        $relativePath = "location-seeds/{$name}.json";
+        $url = self::SOURCES[$name] ?? null;
+        if (! $url) {
+            throw new RuntimeException("No source configured for dataset [{$name}].");
+        }
+
+        $fileName = basename(parse_url($url, PHP_URL_PATH) ?: "{$name}.json");
+        $relativePath = "location-seeds/{$fileName}";
 
         if (! $disk->exists($relativePath)) {
-            $url = self::SOURCES[$name] ?? null;
-            if (! $url) {
-                throw new RuntimeException("No source configured for dataset [{$name}].");
-            }
-
             $this->command?->info("Downloading {$name}.json from {$url}");
             $response = Http::timeout(180)
                 ->retry(3, 1200)
@@ -56,7 +57,17 @@ class LocationsSeeder extends Seeder
             $disk->put($relativePath, $response->body());
         }
 
-        $decoded = json_decode($disk->get($relativePath), true);
+        $contents = $disk->get($relativePath);
+        if (str_ends_with($relativePath, '.gz')) {
+            $decodedContent = gzdecode($contents);
+            if ($decodedContent === false) {
+                throw new RuntimeException("Failed to decompress dataset [{$name}] from {$relativePath}.");
+            }
+
+            $contents = $decodedContent;
+        }
+
+        $decoded = json_decode($contents, true);
         if (! is_array($decoded)) {
             throw new RuntimeException("Invalid JSON payload for dataset [{$name}].");
         }

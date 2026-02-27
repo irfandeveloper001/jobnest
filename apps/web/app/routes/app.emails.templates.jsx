@@ -4,54 +4,56 @@ import { useRef } from 'react';
 import { apiFetch } from '../lib/api.server';
 import { requireUser } from '../lib/session.server';
 
-const DEFAULT_PROSPECT = {
+const TOKENS = ['{{first_name}}', '{{last_name}}', '{{company_name}}', '{{job_title}}', '{{meeting_link}}'];
+
+const DEFAULT_PREVIEW_CONTEXT = {
   first_name: 'Sarah',
   last_name: 'Jenkins',
   company_name: 'Innovate Co.',
   job_title: 'VP Product',
-  meeting_link: 'cal.com/arivera/15min',
+  meeting_link: 'https://cal.com/jobnest/15min',
   email: 's.jenkins@innovate.co',
 };
 
-function normalizeTemplates(payload) {
-  const list = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.data)
-      ? payload.data
-      : [];
-
-  return list.map((item) => ({
-    id: item.id,
-    name: item.name || 'Untitled Template',
-    subject: item.subject || '',
-    body_html: item.body_html || item.body || '',
-    updated_at: item.updated_at || item.updatedAt || '',
-    scope: item.scope || 'personal',
-    status: item.status || 'draft',
-  }));
-}
-
-function normalizeProspect(payload) {
-  const data = payload?.data || payload;
-  if (!data || typeof data !== 'object') return DEFAULT_PROSPECT;
-
+function fallbackTemplate() {
   return {
-    first_name: data.first_name || DEFAULT_PROSPECT.first_name,
-    last_name: data.last_name || DEFAULT_PROSPECT.last_name,
-    company_name: data.company_name || DEFAULT_PROSPECT.company_name,
-    job_title: data.job_title || DEFAULT_PROSPECT.job_title,
-    meeting_link: data.meeting_link || DEFAULT_PROSPECT.meeting_link,
-    email: data.email || DEFAULT_PROSPECT.email,
+    id: 'demo-template',
+    name: 'Partnership Outreach',
+    subject: 'Re: Exciting partnership opportunity for {{company_name}}',
+    body_html:
+      "<p>Hi {{first_name}},</p><p>I've been following {{company_name}} and your work as {{job_title}}.</p><p>If you are open to a short call, you can use {{meeting_link}}.</p><p>Best regards,<br/>JobNest Team</p>",
+    scope: 'personal',
+    status: 'draft',
+    updated_at: '',
   };
 }
 
+function normalizeTemplate(item) {
+  return {
+    id: item?.id,
+    name: item?.name || 'Untitled Template',
+    subject: item?.subject || '',
+    body_html: item?.body_html || '',
+    scope: item?.scope || 'personal',
+    status: item?.status || 'draft',
+    updated_at: item?.updated_at || '',
+  };
+}
+
+function normalizeTemplates(payload) {
+  const data = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+  return data.map(normalizeTemplate);
+}
+
+function normalizeScope(value) {
+  const next = String(value || 'all').toLowerCase();
+  return ['all', 'drafts', 'personal', 'team'].includes(next) ? next : 'all';
+}
+
 function applyScopeFilter(templates, scope) {
-  if (!scope || scope === 'all') return templates;
+  if (scope === 'all') return templates;
   if (scope === 'drafts') return templates.filter((tpl) => String(tpl.status).toLowerCase() === 'draft');
-  if (scope === 'personal' || scope === 'team') {
-    return templates.filter((tpl) => String(tpl.scope).toLowerCase() === scope);
-  }
-  return templates;
+  return templates.filter((tpl) => String(tpl.scope).toLowerCase() === scope);
 }
 
 function buildQuery(params = {}) {
@@ -70,27 +72,18 @@ function buildTemplatesHref(params = {}) {
   return `/app/emails/templates${query ? `?${query}` : ''}`;
 }
 
-function replaceTokens(text, prospect) {
-  if (!text) return '';
-  return String(text)
-    .replaceAll('{{first_name}}', prospect.first_name || '')
-    .replaceAll('{{last_name}}', prospect.last_name || '')
-    .replaceAll('{{company_name}}', prospect.company_name || '')
-    .replaceAll('{{job_title}}', prospect.job_title || '')
-    .replaceAll('{{meeting_link}}', prospect.meeting_link || '')
-    .replaceAll('{{email}}', prospect.email || '');
-}
-
-function fallbackTemplate() {
-  return {
-    id: 'demo-template',
-    name: 'Partnership Outreach',
-    subject: 'Re: Exciting partnership opportunity for {{company_name}}',
-    body_html: `<p>Hi {{first_name}},</p><p>I've been following {{company_name}}'s recent growth in the SaaS sector and I was particularly impressed by your latest feature release.</p><p>It's clear that as the {{job_title}}, you've played a key role in this strategy.</p><p>Do you have 10 minutes this week? You can pick a time directly here: {{meeting_link}}</p><p>Best regards,<br/>JobNest Team</p>`,
-    updated_at: '',
-    scope: 'personal',
-    status: 'draft',
+function replaceTokens(input, context) {
+  const safe = {
+    ...DEFAULT_PREVIEW_CONTEXT,
+    ...(context || {}),
   };
+
+  return String(input || '')
+    .replaceAll('{{first_name}}', safe.first_name || '')
+    .replaceAll('{{last_name}}', safe.last_name || '')
+    .replaceAll('{{company_name}}', safe.company_name || '')
+    .replaceAll('{{job_title}}', safe.job_title || '')
+    .replaceAll('{{meeting_link}}', safe.meeting_link || '');
 }
 
 function extractTemplateId(payload, fallbackId) {
@@ -101,8 +94,8 @@ export async function loader({ request }) {
   await requireUser(request);
   const url = new URL(request.url);
   const q = (url.searchParams.get('q') || '').trim();
-  const selectedTemplateParam = (url.searchParams.get('template') || '').trim();
-  const scope = (url.searchParams.get('scope') || 'all').trim().toLowerCase();
+  const scope = normalizeScope(url.searchParams.get('scope'));
+  const selectedId = (url.searchParams.get('template') || '').trim();
   const showSendTest = url.searchParams.get('send_test') === '1';
   const saved = url.searchParams.get('saved') === '1';
   const sent = url.searchParams.get('sent') === '1';
@@ -115,8 +108,8 @@ export async function loader({ request }) {
     if (q) query.set('q', q);
     const payload = await apiFetch(request, `/api/email-templates${query.toString() ? `?${query.toString()}` : ''}`);
     templates = normalizeTemplates(payload);
-  } catch (e) {
-    error = e?.message || 'Unable to load templates right now.';
+  } catch (fetchError) {
+    error = fetchError?.message || 'Unable to load templates right now.';
   }
 
   if (!templates.length) {
@@ -124,36 +117,52 @@ export async function loader({ request }) {
   }
 
   const scopedTemplates = applyScopeFilter(templates, scope);
-  const sourceTemplates = scopedTemplates.length ? scopedTemplates : templates;
-  const selectedTemplate = sourceTemplates.find((tpl) => String(tpl.id) === selectedTemplateParam) || sourceTemplates[0] || null;
+  const availableTemplates = scopedTemplates.length ? scopedTemplates : templates;
 
-  let prospect = DEFAULT_PROSPECT;
-  try {
-    const payload = await apiFetch(request, '/api/prospects/preview');
-    prospect = normalizeProspect(payload);
-  } catch (e) {
-    prospect = DEFAULT_PROSPECT;
+  let selectedTemplate = availableTemplates.find((item) => String(item.id) === selectedId) || availableTemplates[0];
+  let previewContext = { ...DEFAULT_PREVIEW_CONTEXT };
+  let previewSubject = replaceTokens(selectedTemplate?.subject, previewContext);
+  let previewBodyHtml = replaceTokens(selectedTemplate?.body_html, previewContext);
+
+  if (selectedTemplate?.id && !String(selectedTemplate.id).startsWith('demo-')) {
+    try {
+      const detailPayload = await apiFetch(request, `/api/email-templates/${selectedTemplate.id}`);
+      const templateData = detailPayload?.data ? normalizeTemplate(detailPayload.data) : selectedTemplate;
+      const preview = detailPayload?.preview || {};
+
+      selectedTemplate = templateData;
+      previewContext = {
+        ...previewContext,
+        ...(preview.context || {}),
+      };
+      previewSubject = preview.subject || replaceTokens(templateData.subject, previewContext);
+      previewBodyHtml = preview.body_html || replaceTokens(templateData.body_html, previewContext);
+    } catch (detailError) {
+      error = error || detailError?.message || 'Unable to load selected template details.';
+    }
   }
 
   return json({
-    templates: sourceTemplates,
+    templates: availableTemplates,
     selectedTemplate,
     q,
     scope,
-    prospect,
     showSendTest,
     saved,
     sent,
     error,
+    previewContext,
+    previewSubject,
+    previewBodyHtml,
   });
 }
 
 export async function action({ request }) {
   await requireUser(request);
   const formData = await request.formData();
-  const intent = String(formData.get('intent') || '').toLowerCase();
+  const intent = String(formData.get('intent') || '').trim().toLowerCase();
   const q = String(formData.get('q') || '').trim();
-  const scope = String(formData.get('scope') || 'all').trim().toLowerCase();
+  const scope = normalizeScope(formData.get('scope'));
 
   try {
     if (intent === 'select_template') {
@@ -163,23 +172,26 @@ export async function action({ request }) {
 
     if (intent === 'save') {
       const templateId = String(formData.get('template_id') || '').trim();
-      const name = String(formData.get('name') || '').trim() || 'Untitled Template';
-      const subject = String(formData.get('subject') || '').trim();
-      const body = String(formData.get('body') || '');
+      const payload = {
+        name: String(formData.get('name') || '').trim() || 'Untitled Template',
+        subject: String(formData.get('subject') || '').trim(),
+        body_html: String(formData.get('body') || ''),
+        scope: String(formData.get('template_scope') || 'personal').trim().toLowerCase(),
+        status: String(formData.get('template_status') || 'draft').trim().toLowerCase(),
+      };
 
-      if (!subject) {
-        return json({ error: 'Subject is required for saving a template.' }, { status: 400 });
+      if (!payload.subject) {
+        return json({ error: 'Subject is required.' }, { status: 400 });
       }
-      if (!body.trim()) {
+      if (!payload.body_html.trim()) {
         return json({ error: 'Template body cannot be empty.' }, { status: 400 });
       }
-
-      const payload = {
-        name,
-        subject,
-        body_html: body,
-        body,
-      };
+      if (!['personal', 'team'].includes(payload.scope)) {
+        payload.scope = 'personal';
+      }
+      if (!['draft', 'active'].includes(payload.status)) {
+        payload.status = 'draft';
+      }
 
       let responsePayload;
       if (templateId && !String(templateId).startsWith('demo-')) {
@@ -202,8 +214,8 @@ export async function action({ request }) {
       const templateId = String(formData.get('template_id') || '').trim();
       const testEmail = String(formData.get('test_email') || '').trim();
 
-      if (!templateId) {
-        return json({ error: 'Select a template before sending a test.' }, { status: 400 });
+      if (!templateId || String(templateId).startsWith('demo-')) {
+        return json({ error: 'Save this template first, then send a test email.' }, { status: 400 });
       }
       if (!testEmail) {
         return json({ error: 'Test email is required.' }, { status: 400 });
@@ -218,8 +230,8 @@ export async function action({ request }) {
     }
 
     return json({ error: 'Invalid action.' }, { status: 400 });
-  } catch (e) {
-    return json({ error: e?.message || 'Unable to complete this request.' }, { status: e?.status || 400 });
+  } catch (error) {
+    return json({ error: error?.message || 'Unable to process this request.' }, { status: error?.status || 400 });
   }
 }
 
@@ -230,9 +242,6 @@ export default function AppEmailsTemplatesRoute() {
   const bodyInputRef = useRef(null);
   const selectedTemplate = data.selectedTemplate || fallbackTemplate();
 
-  const previewSubject = replaceTokens(selectedTemplate.subject || '', data.prospect);
-  const previewBody = replaceTokens(selectedTemplate.body_html || '', data.prospect);
-
   const syncEditorBody = () => {
     if (editorRef.current && bodyInputRef.current) {
       bodyInputRef.current.value = editorRef.current.innerHTML;
@@ -242,8 +251,8 @@ export default function AppEmailsTemplatesRoute() {
   const insertVariableToken = (token) => {
     const editor = editorRef.current;
     if (!editor) return;
-    editor.focus();
 
+    editor.focus();
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
       editor.innerHTML += token;
@@ -328,7 +337,7 @@ export default function AppEmailsTemplatesRoute() {
           {data.error ? <p className="text-xs text-red-700">{data.error}</p> : null}
           {actionData?.error ? <p className="text-xs text-red-700">{actionData.error}</p> : null}
           {data.saved ? <p className="text-xs text-emerald-700">Template saved.</p> : null}
-          {data.sent ? <p className="text-xs text-emerald-700">Test email sent.</p> : null}
+          {data.sent ? <p className="text-xs text-emerald-700">Test email queued successfully.</p> : null}
         </div>
       ) : null}
 
@@ -379,7 +388,7 @@ export default function AppEmailsTemplatesRoute() {
           <div className="border-b border-slate-200 px-4 py-4">
             <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Variables</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {['{{first_name}}', '{{last_name}}', '{{company_name}}', '{{job_title}}', '{{meeting_link}}'].map((token) => (
+              {TOKENS.map((token) => (
                 <button
                   key={token}
                   type="button"
@@ -412,12 +421,6 @@ export default function AppEmailsTemplatesRoute() {
                 </Link>
               ))}
             </div>
-          </div>
-
-          <div className="mt-auto p-4">
-            <button type="button" className="w-full rounded-xl border-2 border-dashed border-slate-300 px-3 py-2 text-sm font-semibold text-slate-500 hover:border-slate-400 hover:text-slate-700">
-              + New Category
-            </button>
           </div>
         </aside>
 
@@ -464,7 +467,9 @@ export default function AppEmailsTemplatesRoute() {
             <input type="hidden" name="template_id" value={selectedTemplate.id || ''} />
             <input type="hidden" name="q" value={data.q} />
             <input type="hidden" name="scope" value={data.scope} />
-            <input type="hidden" name="name" value={selectedTemplate.name || ''} />
+            <input type="hidden" name="name" value={selectedTemplate.name || 'Untitled Template'} />
+            <input type="hidden" name="template_scope" value={selectedTemplate.scope || 'personal'} />
+            <input type="hidden" name="template_status" value={selectedTemplate.status || 'draft'} />
             <input ref={bodyInputRef} type="hidden" name="body" defaultValue={selectedTemplate.body_html || ''} />
 
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
@@ -483,6 +488,7 @@ export default function AppEmailsTemplatesRoute() {
                 className="min-h-[560px] px-8 py-8 text-base leading-relaxed text-slate-800 outline-none"
                 contentEditable
                 suppressContentEditableWarning
+                onInput={syncEditorBody}
                 dangerouslySetInnerHTML={{ __html: selectedTemplate.body_html || '' }}
               />
             </div>
@@ -511,7 +517,7 @@ export default function AppEmailsTemplatesRoute() {
                   <input
                     type="email"
                     name="test_email"
-                    defaultValue={data.prospect.email}
+                    defaultValue={data.previewContext?.email || DEFAULT_PREVIEW_CONTEXT.email}
                     required
                     className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:border-emerald-500"
                   />
@@ -540,16 +546,16 @@ export default function AppEmailsTemplatesRoute() {
               </div>
               <div className="px-4 py-4 text-sm">
                 <p className="text-slate-400">
-                  From: <span className="font-semibold text-slate-500">Alex Rivera</span> &lt;alex@company.com&gt;
+                  From: <span className="font-semibold text-slate-500">JobNest Team</span> &lt;no-reply@jobnest.local&gt;
                 </p>
                 <p className="mt-1 text-slate-400">
-                  To: <span className="font-semibold text-slate-500">{data.prospect.first_name} {data.prospect.last_name}</span> &lt;{data.prospect.email}&gt;
+                  To: <span className="font-semibold text-slate-500">{data.previewContext.first_name} {data.previewContext.last_name}</span> &lt;{data.previewContext.email || DEFAULT_PREVIEW_CONTEXT.email}&gt;
                 </p>
                 <div className="mt-3 border-t border-slate-200 pt-3">
-                  <p className="text-2xl font-bold leading-tight text-slate-900">{previewSubject}</p>
+                  <p className="text-2xl font-bold leading-tight text-slate-900">{data.previewSubject}</p>
                   <div
                     className="mt-4 space-y-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-700"
-                    dangerouslySetInnerHTML={{ __html: previewBody }}
+                    dangerouslySetInnerHTML={{ __html: data.previewBodyHtml }}
                   />
                 </div>
               </div>
@@ -566,11 +572,11 @@ export default function AppEmailsTemplatesRoute() {
             <button type="button" className="mt-2 flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
               <div className="flex items-center gap-2">
                 <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-300 text-xs font-bold text-slate-600">
-                  {data.prospect.first_name[0]}{data.prospect.last_name[0]}
+                  {data.previewContext.first_name?.[0] || 'S'}{data.previewContext.last_name?.[0] || 'J'}
                 </span>
                 <div className="text-left">
-                  <p className="text-sm font-semibold text-slate-800">{data.prospect.first_name} {data.prospect.last_name}</p>
-                  <p className="text-xs text-slate-500">{data.prospect.company_name} • {data.prospect.job_title}</p>
+                  <p className="text-sm font-semibold text-slate-800">{data.previewContext.first_name} {data.previewContext.last_name}</p>
+                  <p className="text-xs text-slate-500">{data.previewContext.company_name} • {data.previewContext.job_title}</p>
                 </div>
               </div>
               <span className="material-symbols-outlined text-base text-slate-400">expand_more</span>
@@ -581,3 +587,4 @@ export default function AppEmailsTemplatesRoute() {
     </div>
   );
 }
+

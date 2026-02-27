@@ -1,37 +1,56 @@
-import { json } from '@remix-run/node';
-import { Form, Link, useActionData } from '@remix-run/react';
+import { useState } from 'react';
+import { Link, useNavigation, useSearchParams, useSubmit } from '@remix-run/react';
+import { signInWithEmailAndPassword } from 'firebase/auth';
 import PublicLayout from '../components/PublicLayout';
-import { apiFetch } from '../lib/api.server';
-import { createUserSession } from '../lib/session.server';
+import { getFirebaseAuth } from '../lib/firebase.client';
 
-export async function action({ request }) {
-  const formData = await request.formData();
-  const email = String(formData.get('email') || '');
-  const password = String(formData.get('password') || '');
-
-  try {
-    const payload = await apiFetch(request, '/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const user = payload?.user || payload?.data || null;
-    const profileCompleted = Boolean(payload?.profile_completed ?? user?.profile_completed);
-
-    return createUserSession({
-      request,
-      token: payload.token,
-      role: user?.role || 'user',
-      user,
-      redirectTo: user?.role === 'admin' ? '/admin/dashboard' : (profileCompleted ? '/app/dashboard' : '/app/profile'),
-    });
-  } catch (error) {
-    return json({ error: error.message || 'Unable to sign in.' }, { status: error.status || 400 });
-  }
+function getFirebaseMessage(error) {
+  const code = String(error?.code || '');
+  const map = {
+    'auth/invalid-credential': 'Invalid email or password.',
+    'auth/user-not-found': 'No account found for this email.',
+    'auth/wrong-password': 'Invalid email or password.',
+    'auth/too-many-requests': 'Too many attempts. Try again later.',
+    'auth/network-request-failed': 'Network issue while contacting Firebase.',
+  };
+  return map[code] || error?.message || 'Unable to sign in.';
 }
 
 export default function SignInRoute() {
-  const actionData = useActionData();
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const [searchParams] = useSearchParams();
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [clientError, setClientError] = useState('');
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setClientError('');
+    setIsAuthenticating(true);
+
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const email = String(formData.get('email') || '').trim();
+    const password = String(formData.get('password') || '');
+
+    try {
+      const auth = getFirebaseAuth();
+      const credential = await signInWithEmailAndPassword(auth, email, password);
+      const idToken = await credential.user.getIdToken();
+
+      const sessionPayload = new FormData();
+      sessionPayload.set('idToken', idToken);
+      sessionPayload.set('mode', 'sign-in');
+      submit(sessionPayload, { method: 'post', action: '/auth/session' });
+    } catch (error) {
+      setClientError(getFirebaseMessage(error));
+      setIsAuthenticating(false);
+    }
+  }
+
+  const queryError = String(searchParams.get('error') || '');
+  const errorMessage = clientError || queryError;
+  const submitting = isAuthenticating || navigation.state !== 'idle';
 
   return (
     <PublicLayout>
@@ -40,13 +59,13 @@ export default function SignInRoute() {
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Sign in to JobNest</h1>
           <p className="mt-2 text-sm text-slate-600">Access your dashboard and continue your workflow.</p>
 
-          {actionData?.error ? (
+          {errorMessage ? (
             <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {actionData.error}
+              {errorMessage}
             </div>
           ) : null}
 
-          <Form method="post" className="mt-6 space-y-4">
+          <form method="post" onSubmit={handleSubmit} className="mt-6 space-y-4">
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-slate-700">Email</span>
               <input name="email" type="email" required className="w-full rounded-xl border-slate-300" />
@@ -57,10 +76,14 @@ export default function SignInRoute() {
               <input name="password" type="password" required className="w-full rounded-xl border-slate-300" />
             </label>
 
-            <button type="submit" className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700">
-              Sign In
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? 'Signing in...' : 'Sign In'}
             </button>
-          </Form>
+          </form>
 
           <div className="mt-4 flex items-center justify-between text-sm">
             <Link to="/auth/forgot-password" className="font-medium text-slate-600 hover:text-slate-900">Forgot password?</Link>

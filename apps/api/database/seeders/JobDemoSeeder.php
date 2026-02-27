@@ -4,100 +4,108 @@ namespace Database\Seeders;
 
 use App\Models\Job;
 use App\Models\JobSource;
+use App\Models\User;
 use Illuminate\Database\Seeder;
-use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class JobDemoSeeder extends Seeder
 {
     public function run(): void
     {
-        $arbeitnow = JobSource::query()->firstOrCreate(
-            ['key' => 'arbeitnow'],
+        $source = JobSource::query()->updateOrCreate(
+            ['key' => 'demo'],
             [
-                'name' => 'Arbeitnow',
-                'base_url' => 'https://www.arbeitnow.com/api/job-board-api',
+                'name' => 'Demo Jobs',
+                'base_url' => 'local://demo-jobs',
                 'enabled' => true,
-                'sync_interval_minutes' => 15,
+                'sync_interval_minutes' => 1440,
             ]
         );
 
-        $remotive = JobSource::query()->firstOrCreate(
-            ['key' => 'remotive'],
-            [
-                'name' => 'Remotive',
-                'base_url' => 'https://remotive.com/api/remote-jobs',
-                'enabled' => true,
-                'sync_interval_minutes' => 15,
-            ]
-        );
-
-        $jobs = [
-            [
-                'source_id' => $arbeitnow->id,
-                'external_id' => 'demo-arbeitnow-frontend-react',
-                'title' => 'Senior Frontend Engineer',
-                'company_name' => 'TechFlow Systems',
-                'location' => 'Remote / New York',
-                'status' => 'new',
-                'url' => 'https://example.com/jobs/frontend-engineer',
-            ],
-            [
-                'source_id' => $arbeitnow->id,
-                'external_id' => 'demo-arbeitnow-fullstack-laravel',
-                'title' => 'Full Stack Developer (Laravel + Remix)',
-                'company_name' => 'CloudNest Labs',
-                'location' => 'Remote',
-                'status' => 'saved',
-                'url' => 'https://example.com/jobs/fullstack-laravel-remix',
-            ],
-            [
-                'source_id' => $remotive->id,
-                'external_id' => 'demo-remotive-ui-engineer',
-                'title' => 'UI Engineer',
-                'company_name' => 'PixelBridge',
-                'location' => 'Hybrid - Berlin',
-                'status' => 'applied',
-                'url' => 'https://example.com/jobs/ui-engineer',
-            ],
-            [
-                'source_id' => $remotive->id,
-                'external_id' => 'demo-remotive-react-performance',
-                'title' => 'React Performance Engineer',
-                'company_name' => 'ScaleWorks',
-                'location' => 'Remote - Europe',
-                'status' => 'new',
-                'url' => 'https://example.com/jobs/react-performance',
-            ],
-            [
-                'source_id' => $arbeitnow->id,
-                'external_id' => 'demo-arbeitnow-frontend-lead',
-                'title' => 'Frontend Lead',
-                'company_name' => 'GrowthStack',
-                'location' => 'On-site - London',
-                'status' => 'ignored',
-                'url' => 'https://example.com/jobs/frontend-lead',
-            ],
+        $titles = [
+            'Frontend Developer',
+            'React Engineer',
+            'Laravel Backend Developer',
+            'Full Stack JavaScript Engineer',
+            'QA Automation Engineer',
+            'DevOps Engineer',
+            'Product Designer',
+            'UI Engineer',
+            'Mobile App Developer',
+            'Data Analyst',
         ];
 
-        foreach ($jobs as $index => $job) {
-            Job::query()->updateOrCreate(
+        $companies = [
+            'NexaSoft',
+            'PakTech Labs',
+            'CloudNova',
+            'Greenbyte Systems',
+            'Vertex Digital',
+            'ByteBridge',
+            'CodePeak',
+            'InnovaStack',
+            'Orbit Solutions',
+            'StackForge',
+        ];
+
+        $locations = [
+            'Lahore, Punjab, Pakistan',
+            'Karachi, Sindh, Pakistan',
+            'Islamabad, Islamabad Capital Territory, Pakistan',
+            'Remote, Pakistan',
+        ];
+
+        for ($i = 1; $i <= 30; $i++) {
+            $title = $titles[array_rand($titles)];
+            $company = $companies[array_rand($companies)];
+            $location = $locations[array_rand($locations)];
+            $isRemote = str_contains(strtolower($location), 'remote');
+
+            $job = Job::query()->updateOrCreate(
                 [
-                    'source_id' => $job['source_id'],
-                    'external_id' => $job['external_id'],
+                    'source_id' => $source->id,
+                    'external_id' => 'demo-'.$i,
                 ],
                 [
-                    'title' => $job['title'],
-                    'company_name' => $job['company_name'],
-                    'location' => $job['location'],
-                    'remote_type' => 'remote',
-                    'employment_type' => 'full_time',
-                    'status' => $job['status'],
-                    'url' => $job['url'],
-                    'description' => 'Demo seeded role for local UI/testing.',
-                    'posted_at' => Carbon::now()->subDays($index + 1),
-                    'raw_payload' => ['seeded' => true],
+                    'title' => $title,
+                    'company_name' => $company,
+                    'location' => $location,
+                    'remote_type' => $isRemote ? 'remote' : (rand(0, 1) ? 'onsite' : 'hybrid'),
+                    'employment_type' => rand(0, 4) === 0 ? 'contract' : 'full_time',
+                    'status' => 'new',
+                    'url' => 'https://example.com/jobs/demo-'.$i,
+                    'description' => "Demo seed job for {$title} at {$company}.",
+                    'tags' => [
+                        'seed' => true,
+                        'role_family' => str_contains(strtolower($title), 'designer') ? 'design' : 'engineering',
+                    ],
+                    'posted_at' => now()->subDays(rand(0, 13))->subHours(rand(0, 23)),
+                    'raw_payload' => [
+                        'seed' => true,
+                        'seed_no' => $i,
+                        'source' => 'demo',
+                    ],
                 ]
             );
+
+            if (Schema::hasTable('job_user')) {
+                $users = User::query()->pluck('id');
+                foreach ($users as $userId) {
+                    DB::table('job_user')->updateOrInsert(
+                        [
+                            'user_id' => $userId,
+                            'job_id' => $job->id,
+                        ],
+                        [
+                            'saved' => false,
+                            'hidden' => false,
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]
+                    );
+                }
+            }
         }
     }
 }

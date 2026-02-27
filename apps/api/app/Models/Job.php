@@ -26,6 +26,7 @@ class Job extends Model
         'salary_max',
         'salary_currency',
         'description',
+        'tags',
         'posted_at',
         'raw_payload',
     ];
@@ -34,6 +35,7 @@ class Job extends Model
     {
         return [
             'posted_at' => 'datetime',
+            'tags' => 'array',
             'raw_payload' => 'array',
         ];
     }

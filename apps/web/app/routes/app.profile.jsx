@@ -1,6 +1,9 @@
 import { json, redirect } from '@remix-run/node';
-import { Form, Link, useActionData, useLoaderData } from '@remix-run/react';
+import { Form, Link, useActionData, useLoaderData, useNavigation, useSubmit } from '@remix-run/react';
+import { useState } from 'react';
+import { ref, uploadBytes } from 'firebase/storage';
 import { apiFetch } from '../lib/api.server';
+import { getFirebaseAuth, getFirebaseStorage } from '../lib/firebase.client';
 import { requireUser } from '../lib/session.server';
 
 function toPositiveInt(value, fallback = null) {
@@ -43,12 +46,19 @@ function buildLocationLabel(countryName, stateName, cityName) {
   return [cityName, stateName, countryName].filter(Boolean).join(', ');
 }
 
+function isFirebaseStorageEnabled() {
+  if (typeof window === 'undefined') return false;
+  const value = String(window?.ENV?.FIREBASE_STORAGE_ENABLED || 'false').toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
 export async function loader({ request }) {
   const auth = await requireUser(request);
   const url = new URL(request.url);
   const notice = (url.searchParams.get('notice') || '').trim();
 
   let profile = {
+    firebase_uid: '',
     name: auth.user?.name || '',
     email: auth.user?.email || '',
     phone: '',
@@ -200,7 +210,35 @@ export async function action({ request }) {
       return redirect('/app/profile?notice=profile_saved');
     }
 
-    if (intent === 'upload_cv') {
+    if (intent === 'upload_cv_meta') {
+      const storagePath = String(formData.get('storage_path') || '').trim();
+      const filename = String(formData.get('filename') || '').trim();
+      const sizeBytesRaw = String(formData.get('size_bytes') || '').trim();
+      const mimeType = String(formData.get('mime_type') || '').trim();
+
+      if (!storagePath || !filename) {
+        return json({ error: 'Missing CV storage metadata.' }, { status: 400 });
+      }
+
+      const sizeBytes = sizeBytesRaw ? Number(sizeBytesRaw) : null;
+      if (sizeBytes != null && (!Number.isFinite(sizeBytes) || sizeBytes <= 0)) {
+        return json({ error: 'Invalid CV size.' }, { status: 400 });
+      }
+
+      await apiFetch(request, '/api/profile/cv-meta', {
+        method: 'POST',
+        body: JSON.stringify({
+          storage_path: storagePath,
+          filename,
+          size_bytes: sizeBytes,
+          mime_type: mimeType || null,
+        }),
+      });
+
+      return redirect('/app/profile?notice=cv_uploaded');
+    }
+
+    if (intent === 'upload_cv_legacy') {
       const cvFile = formData.get('cv_file');
       if (!(cvFile && typeof cvFile === 'object' && 'size' in cvFile && cvFile.size > 0)) {
         return json({ error: 'Please select a CV file before uploading.' }, { status: 400 });
@@ -234,6 +272,11 @@ export async function action({ request }) {
 export default function AppProfileRoute() {
   const { profile, cv, noticeMessage, error, locationError, locationOptions } = useLoaderData();
   const actionData = useActionData();
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const [selectedCvFile, setSelectedCvFile] = useState(null);
+  const [clientUploadError, setClientUploadError] = useState('');
+  const [isCvUploading, setIsCvUploading] = useState(false);
 
   const displayName = profile?.name || 'User';
   const initials = displayName
@@ -248,6 +291,80 @@ export default function AppProfileRoute() {
     : '';
 
   const { countries, states, cities, selectedCountryId, selectedStateId, selectedCityId, selectedLocationLabel } = locationOptions;
+  const handleLocationChange = (event) => {
+    event.currentTarget.form?.requestSubmit();
+  };
+
+  const uploadActionActive =
+    navigation.state === 'submitting' &&
+    ['upload_cv_meta', 'upload_cv_legacy'].includes(String(navigation.formData?.get('intent') || ''));
+
+  const isUploadBusy = isCvUploading || uploadActionActive;
+
+  async function handleCvUpload(event) {
+    event.preventDefault();
+    setClientUploadError('');
+
+    if (!selectedCvFile) {
+      setClientUploadError('Please select a CV file before uploading.');
+      return;
+    }
+
+    const allowedExtensions = ['pdf', 'doc', 'docx'];
+    const extension = selectedCvFile.name.split('.').pop()?.toLowerCase() || '';
+    if (!allowedExtensions.includes(extension)) {
+      setClientUploadError('Only PDF, DOC, and DOCX files are allowed.');
+      return;
+    }
+
+    if (selectedCvFile.size > 5 * 1024 * 1024) {
+      setClientUploadError('CV file must be 5MB or smaller.');
+      return;
+    }
+
+    if (!isFirebaseStorageEnabled()) {
+      const fallbackPayload = new FormData();
+      fallbackPayload.set('intent', 'upload_cv_legacy');
+      fallbackPayload.set('cv_file', selectedCvFile);
+      setIsCvUploading(false);
+      submit(fallbackPayload, { method: 'post', encType: 'multipart/form-data' });
+      return;
+    }
+
+    try {
+      setIsCvUploading(true);
+      const auth = getFirebaseAuth();
+      const storage = getFirebaseStorage();
+      const firebaseUid = auth.currentUser?.uid || String(profile?.firebase_uid || '').trim();
+
+      if (!firebaseUid) {
+        throw new Error('Firebase session not available. Please sign out and sign in again.');
+      }
+
+      const sanitizedFileName = selectedCvFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `cvs/${firebaseUid}/${Date.now()}_${sanitizedFileName}`;
+      const fileRef = ref(storage, storagePath);
+      await uploadBytes(fileRef, selectedCvFile, {
+        contentType: selectedCvFile.type || 'application/octet-stream',
+      });
+
+      const payload = new FormData();
+      payload.set('intent', 'upload_cv_meta');
+      payload.set('storage_path', storagePath);
+      payload.set('filename', selectedCvFile.name);
+      payload.set('size_bytes', String(selectedCvFile.size));
+      payload.set('mime_type', selectedCvFile.type || '');
+      setIsCvUploading(false);
+      submit(payload, { method: 'post' });
+    } catch (uploadError) {
+      const fallbackPayload = new FormData();
+      fallbackPayload.set('intent', 'upload_cv_legacy');
+      fallbackPayload.set('cv_file', selectedCvFile);
+      setClientUploadError('Firebase Storage unavailable on current plan. Uploading CV via local server storage.');
+      setIsCvUploading(false);
+      submit(fallbackPayload, { method: 'post', encType: 'multipart/form-data' });
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -341,6 +458,7 @@ export default function AppProfileRoute() {
                       <select
                         name="country_id"
                         defaultValue={selectedCountryId || ''}
+                        onChange={handleLocationChange}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-emerald-500"
                       >
                         <option value="">Select country</option>
@@ -358,6 +476,7 @@ export default function AppProfileRoute() {
                         name="state_id"
                         defaultValue={selectedStateId || ''}
                         disabled={!selectedCountryId}
+                        onChange={handleLocationChange}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-emerald-500 disabled:bg-slate-100"
                       >
                         <option value="">Select state</option>
@@ -375,6 +494,7 @@ export default function AppProfileRoute() {
                         name="city_id"
                         defaultValue={selectedCityId || ''}
                         disabled={!selectedStateId}
+                        onChange={handleLocationChange}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-emerald-500 disabled:bg-slate-100"
                       >
                         <option value="">Select city</option>
@@ -469,13 +589,28 @@ export default function AppProfileRoute() {
                   <h2 className="text-sm font-bold">CV Upload</h2>
                   <p className="mt-1 text-xs text-slate-500">PDF, DOC, DOCX up to 5MB.</p>
 
-                  <Form method="post" encType="multipart/form-data" className="mt-3 space-y-2">
-                    <input type="hidden" name="intent" value="upload_cv" />
-                    <input type="file" name="cv_file" accept=".pdf,.doc,.docx" className="block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs" />
-                    <button type="submit" className="inline-flex rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600">
-                      Upload CV
+                  <form method="post" onSubmit={handleCvUpload} className="mt-3 space-y-2">
+                    <input
+                      type="file"
+                      name="cv_file"
+                      accept=".pdf,.doc,.docx"
+                      onChange={(event) => setSelectedCvFile(event.currentTarget.files?.[0] || null)}
+                      className="block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isUploadBusy}
+                      className="inline-flex rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isUploadBusy ? 'Uploading...' : 'Upload CV'}
                     </button>
-                  </Form>
+                  </form>
+
+                  {clientUploadError ? (
+                    <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {clientUploadError}
+                    </div>
+                  ) : null}
 
                   {cv ? (
                     <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">

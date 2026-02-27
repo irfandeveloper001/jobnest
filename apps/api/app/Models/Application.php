@@ -20,6 +20,7 @@ class Application extends Model
         'cover_note',
         'cv_path',
         'status',
+        'stage_key',
         'submitted_at',
         'emailed_at',
         'meta',
@@ -47,5 +48,15 @@ class Application extends Model
     public function emailLogs(): HasMany
     {
         return $this->hasMany(EmailLog::class, 'application_id');
+    }
+
+    public function events(): HasMany
+    {
+        return $this->hasMany(ApplicationEvent::class, 'application_id');
+    }
+
+    public function followups(): HasMany
+    {
+        return $this->hasMany(Followup::class, 'application_id');
     }
 }

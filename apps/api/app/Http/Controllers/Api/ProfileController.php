@@ -33,6 +33,7 @@ class ProfileController extends Controller
 
         return response()->json([
             'data' => [
+                'firebase_uid' => $user->firebase_uid,
                 'name' => $user->name,
                 'email' => $user->email,
                 'phone' => $user->phone,
@@ -42,10 +43,11 @@ class ProfileController extends Controller
                 'preferred_state_id' => $user->preferred_state_id,
                 'preferred_city_id' => $user->preferred_city_id,
                 'preferred_country_name' => $user->preferredCountry?->name,
+                'preferred_country_iso2' => $user->preferredCountry?->iso2,
                 'preferred_state_name' => $user->preferredState?->name,
                 'preferred_city_name' => $user->preferredCity?->name,
                 'preferred_job_type' => $user->preferred_job_type,
-                'cv_uploaded' => ! empty($user->cv_path),
+                'cv_uploaded' => ! empty($user->cv_storage_path) || ! empty($user->cv_path),
                 'cv_uploaded_at' => optional($user->cv_uploaded_at)->toISOString(),
                 'profile_completed' => $user->isProfileComplete(),
                 'profile_completed_at' => optional($user->profile_completed_at)->toISOString(),
@@ -123,6 +125,10 @@ class ProfileController extends Controller
 
         $path = $validated['cv_file']->store('cvs/'.$user->id, 'app');
         $user->cv_path = $path;
+        $user->cv_storage_path = null;
+        $user->cv_filename = basename($path);
+        $user->cv_size_bytes = Storage::disk('app')->size($path);
+        $user->cv_mime_type = $validated['cv_file']->getClientMimeType();
         $user->cv_uploaded_at = now();
 
         if ($this->isCompletePayload($user) && empty($user->profile_completed_at)) {
@@ -135,6 +141,36 @@ class ProfileController extends Controller
 
         return response()->json([
             'message' => 'CV uploaded successfully.',
+            'data' => $this->cvMeta($user),
+        ]);
+    }
+
+    public function storeCvMeta(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'storage_path' => ['required', 'string', 'max:500'],
+            'filename' => ['required', 'string', 'max:255'],
+            'size_bytes' => ['nullable', 'integer', 'min:1'],
+            'mime_type' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $user = $request->user();
+        $user->cv_storage_path = trim((string) $validated['storage_path']);
+        $user->cv_filename = trim((string) $validated['filename']);
+        $user->cv_size_bytes = isset($validated['size_bytes']) ? (int) $validated['size_bytes'] : null;
+        $user->cv_mime_type = $validated['mime_type'] ?? null;
+        $user->cv_path = $user->cv_storage_path;
+        $user->cv_uploaded_at = now();
+
+        if ($this->isCompletePayload($user) && empty($user->profile_completed_at)) {
+            $user->profile_completed_at = now();
+        }
+
+        $user->save();
+        AutoJobSyncJob::dispatch($user->id)->onQueue('default');
+
+        return response()->json([
+            'message' => 'CV metadata saved successfully.',
             'data' => $this->cvMeta($user),
         ]);
     }
@@ -155,6 +191,10 @@ class ProfileController extends Controller
             Storage::disk('app')->delete($user->cv_path);
         }
 
+        $user->cv_storage_path = null;
+        $user->cv_filename = null;
+        $user->cv_size_bytes = null;
+        $user->cv_mime_type = null;
         $user->cv_path = null;
         $user->cv_uploaded_at = null;
         $user->profile_completed_at = null;
@@ -259,17 +299,21 @@ class ProfileController extends Controller
 
     private function cvMeta($user): ?array
     {
-        if (empty($user->cv_path)) {
+        $storagePath = $user->cv_storage_path ?: $user->cv_path;
+        if (empty($storagePath)) {
             return null;
         }
 
-        $size = Storage::disk('app')->exists($user->cv_path)
-            ? Storage::disk('app')->size($user->cv_path)
-            : null;
+        $size = $user->cv_size_bytes;
+        if (! $size && ! empty($user->cv_path) && Storage::disk('app')->exists($user->cv_path)) {
+            $size = Storage::disk('app')->size($user->cv_path);
+        }
 
         return [
-            'filename' => basename($user->cv_path),
+            'storage_path' => $storagePath,
+            'filename' => $user->cv_filename ?: basename($storagePath),
             'size_bytes' => $size,
+            'mime_type' => $user->cv_mime_type,
             'uploaded_at' => optional($user->cv_uploaded_at)->toISOString(),
         ];
     }

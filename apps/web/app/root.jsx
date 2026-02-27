@@ -1,6 +1,20 @@
-import { Links, Meta, Outlet, Scripts, ScrollRestoration } from '@remix-run/react';
+import { json } from '@remix-run/node';
+import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData } from '@remix-run/react';
 import tailwindStylesheet from './tailwind.css';
 import globalStylesheet from './styles/global.css';
+
+export async function loader() {
+  return json({
+    ENV: {
+      FIREBASE_API_KEY: process.env.FIREBASE_API_KEY || '',
+      FIREBASE_AUTH_DOMAIN: process.env.FIREBASE_AUTH_DOMAIN || '',
+      FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || '',
+      FIREBASE_STORAGE_BUCKET: process.env.FIREBASE_STORAGE_BUCKET || '',
+      FIREBASE_APP_ID: process.env.FIREBASE_APP_ID || '',
+      FIREBASE_STORAGE_ENABLED: process.env.FIREBASE_STORAGE_ENABLED || 'false',
+    },
+  });
+}
 
 export const links = () => [
   { rel: 'stylesheet', href: tailwindStylesheet },
@@ -25,6 +39,9 @@ export const meta = () => [
 ];
 
 export default function App() {
+  const data = useLoaderData();
+  const env = data?.ENV || {};
+
   return (
     <html lang="en">
       <head>
@@ -34,6 +51,11 @@ export default function App() {
       <body className="bg-background-light text-slate-900 antialiased">
         <Outlet />
         <ScrollRestoration />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.ENV = ${JSON.stringify(env)};`,
+          }}
+        />
         <Scripts />
       </body>
     </html>

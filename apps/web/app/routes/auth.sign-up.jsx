@@ -1,38 +1,60 @@
-import { json } from '@remix-run/node';
-import { Form, Link, useActionData } from '@remix-run/react';
+import { useState } from 'react';
+import { Link, useNavigation, useSearchParams, useSubmit } from '@remix-run/react';
+import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 import PublicLayout from '../components/PublicLayout';
-import { apiFetch } from '../lib/api.server';
-import { createUserSession } from '../lib/session.server';
+import { getFirebaseAuth } from '../lib/firebase.client';
 
-export async function action({ request }) {
-  const formData = await request.formData();
-  const name = String(formData.get('name') || '');
-  const email = String(formData.get('email') || '');
-  const password = String(formData.get('password') || '');
-
-  try {
-    const payload = await apiFetch(request, '/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
-    });
-    const user = payload?.user || payload?.data || null;
-    const profileCompleted = Boolean(payload?.profile_completed ?? user?.profile_completed);
-
-    return createUserSession({
-      request,
-      token: payload.token,
-      role: user?.role || 'user',
-      user,
-      redirectTo: user?.role === 'admin' ? '/admin/dashboard' : (profileCompleted ? '/app/dashboard' : '/app/profile'),
-    });
-  } catch (error) {
-    return json({ error: error.message || 'Unable to create account.' }, { status: error.status || 400 });
-  }
+function getFirebaseMessage(error) {
+  const code = String(error?.code || '');
+  const map = {
+    'auth/email-already-in-use': 'This email is already registered.',
+    'auth/invalid-email': 'Please enter a valid email address.',
+    'auth/weak-password': 'Password is too weak. Use at least 8 characters.',
+    'auth/network-request-failed': 'Network issue while contacting Firebase.',
+  };
+  return map[code] || error?.message || 'Unable to create account.';
 }
 
 export default function SignUpRoute() {
-  const actionData = useActionData();
+  const submit = useSubmit();
+  const navigation = useNavigation();
+  const [searchParams] = useSearchParams();
+  const [isSigningUp, setIsSigningUp] = useState(false);
+  const [clientError, setClientError] = useState('');
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setClientError('');
+    setIsSigningUp(true);
+
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const name = String(formData.get('name') || '').trim();
+    const email = String(formData.get('email') || '').trim();
+    const password = String(formData.get('password') || '');
+
+    try {
+      const auth = getFirebaseAuth();
+      const credential = await createUserWithEmailAndPassword(auth, email, password);
+      if (name) {
+        await updateProfile(credential.user, { displayName: name });
+      }
+      const idToken = await credential.user.getIdToken(true);
+
+      const sessionPayload = new FormData();
+      sessionPayload.set('idToken', idToken);
+      sessionPayload.set('name', name);
+      sessionPayload.set('mode', 'sign-up');
+      submit(sessionPayload, { method: 'post', action: '/auth/session' });
+    } catch (error) {
+      setClientError(getFirebaseMessage(error));
+      setIsSigningUp(false);
+    }
+  }
+
+  const queryError = String(searchParams.get('error') || '');
+  const errorMessage = clientError || queryError;
+  const submitting = isSigningUp || navigation.state !== 'idle';
 
   return (
     <PublicLayout>
@@ -41,13 +63,13 @@ export default function SignUpRoute() {
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Create your JobNest account</h1>
           <p className="mt-2 text-sm text-slate-600">Start tracking opportunities in minutes.</p>
 
-          {actionData?.error ? (
+          {errorMessage ? (
             <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {actionData.error}
+              {errorMessage}
             </div>
           ) : null}
 
-          <Form method="post" className="mt-6 space-y-4">
+          <form method="post" onSubmit={handleSubmit} className="mt-6 space-y-4">
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-slate-700">Full name</span>
               <input name="name" type="text" required className="w-full rounded-xl border-slate-300" />
@@ -63,10 +85,14 @@ export default function SignUpRoute() {
               <input name="password" type="password" minLength={8} required className="w-full rounded-xl border-slate-300" />
             </label>
 
-            <button type="submit" className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700">
-              Get Started Free
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? 'Creating account...' : 'Get Started Free'}
             </button>
-          </Form>
+          </form>
 
           <p className="mt-4 text-sm text-slate-600">
             Already have an account?{' '}

@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\Admin\UserAdminController;
 use App\Http\Controllers\Api\AnalyticsController;
 use App\Http\Controllers\Api\ApplicationController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\EmailTemplateController;
+use App\Http\Controllers\Api\FollowupController;
 use App\Http\Controllers\Api\InboxController;
 use App\Http\Controllers\Api\InterviewController;
 use App\Http\Controllers\Api\JobController;
@@ -18,6 +20,7 @@ use Illuminate\Support\Facades\Route;
 Route::prefix('auth')->group(function (): void {
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/firebase-login', [AuthController::class, 'firebaseLogin']);
 
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -31,9 +34,12 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/jobs/sync-now', [JobController::class, 'syncNow']);
     Route::get('/jobs/{job}', [JobController::class, 'show']);
     Route::patch('/jobs/{job}/status', [JobController::class, 'updateStatus']);
+    Route::patch('/jobs/{job}/archive', [JobController::class, 'archive']);
+    Route::delete('/jobs/{job}', [JobController::class, 'destroy']);
 
     Route::get('/profile', [ProfileController::class, 'show']);
     Route::post('/profile', [ProfileController::class, 'store']);
+    Route::post('/profile/cv-meta', [ProfileController::class, 'storeCvMeta']);
     Route::post('/profile/cv', [ProfileController::class, 'uploadCv']);
     Route::get('/profile/cv', [ProfileController::class, 'cv']);
     Route::delete('/profile/cv', [ProfileController::class, 'deleteCv']);
@@ -44,6 +50,18 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/applications', [ApplicationController::class, 'index']);
     Route::post('/applications', [ApplicationController::class, 'store']);
     Route::get('/applications/{application}', [ApplicationController::class, 'show']);
+    Route::post('/applications/{application}/stage', [ApplicationController::class, 'updateStage']);
+    Route::post('/applications/{application}/note', [ApplicationController::class, 'addNote']);
+
+    Route::get('/followups', [FollowupController::class, 'index']);
+    Route::post('/followups', [FollowupController::class, 'store']);
+    Route::patch('/followups/{followup}', [FollowupController::class, 'update']);
+
+    Route::get('/email-templates', [EmailTemplateController::class, 'index']);
+    Route::get('/email-templates/{emailTemplate}', [EmailTemplateController::class, 'show']);
+    Route::post('/email-templates', [EmailTemplateController::class, 'store']);
+    Route::put('/email-templates/{emailTemplate}', [EmailTemplateController::class, 'update']);
+    Route::post('/email-templates/{emailTemplate}/send-test', [EmailTemplateController::class, 'sendTest']);
 
     Route::get('/inbox/threads', [InboxController::class, 'index']);
     Route::get('/inbox/threads/{id}', [InboxController::class, 'show']);

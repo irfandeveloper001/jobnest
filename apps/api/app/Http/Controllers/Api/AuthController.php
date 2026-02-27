@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\FirebaseAuthService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -60,6 +62,82 @@ class AuthController extends Controller
         ]);
     }
 
+    public function firebaseLogin(Request $request, FirebaseAuthService $firebaseAuthService): JsonResponse
+    {
+        $validated = $request->validate([
+            'idToken' => ['nullable', 'string'],
+            'name' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $idToken = trim((string) ($validated['idToken'] ?? $request->bearerToken() ?? ''));
+        if ($idToken === '') {
+            throw ValidationException::withMessages([
+                'idToken' => ['Firebase ID token is required.'],
+            ]);
+        }
+
+        $decoded = $firebaseAuthService->verifyIdToken($idToken);
+        $uid = trim((string) ($decoded['uid'] ?? ''));
+        $email = trim((string) ($decoded['email'] ?? ''));
+        $nameFromToken = trim((string) ($decoded['name'] ?? ''));
+        $displayName = trim((string) ($validated['name'] ?? $nameFromToken ?? ''));
+
+        if ($uid === '') {
+            throw ValidationException::withMessages([
+                'idToken' => ['Firebase token does not include a valid UID.'],
+            ]);
+        }
+
+        if ($email === '') {
+            throw ValidationException::withMessages([
+                'idToken' => ['Firebase token does not include an email address.'],
+            ]);
+        }
+
+        $user = User::query()
+            ->where('firebase_uid', $uid)
+            ->orWhere('email', $email)
+            ->first();
+
+        if (! $user) {
+            $user = User::query()->create([
+                'name' => $displayName !== '' ? $displayName : Str::before($email, '@'),
+                'email' => $email,
+                'firebase_uid' => $uid,
+                'password' => Hash::make(Str::random(40)),
+                'role' => 'user',
+            ]);
+        } else {
+            $changed = false;
+            if ($user->firebase_uid !== $uid) {
+                $user->firebase_uid = $uid;
+                $changed = true;
+            }
+            if ($user->email !== $email) {
+                $user->email = $email;
+                $changed = true;
+            }
+            if ($displayName !== '' && $user->name !== $displayName) {
+                $user->name = $displayName;
+                $changed = true;
+            }
+            if ($changed) {
+                $user->save();
+            }
+        }
+
+        $user->tokens()->delete();
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'token' => $token,
+            'app_token' => $token,
+            'role' => $user->role,
+            'user' => $this->serializeUser($user),
+            'profile_completed' => $user->isProfileComplete(),
+        ]);
+    }
+
     public function logout(Request $request): JsonResponse
     {
         $token = $request->user()?->currentAccessToken();
@@ -89,6 +167,7 @@ class AuthController extends Controller
             'id' => $user->id,
             'name' => $user->name,
             'email' => $user->email,
+            'firebase_uid' => $user->firebase_uid,
             'role' => $user->role,
             'phone' => $user->phone,
             'preferred_country_id' => $user->preferred_country_id,

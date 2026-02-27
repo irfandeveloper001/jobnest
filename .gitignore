@@ -19,3 +19,6 @@ apps/api/.phpunit.result.cache
 *.log
 coverage/
 /tmp/
+
+# Firebase service account key (local only)
+apps/api/firebase-service-account.json

@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -16,6 +17,7 @@ class User extends Authenticatable
     protected $fillable = [
         'name',
         'email',
+        'firebase_uid',
         'password',
         'role',
         'phone',
@@ -26,6 +28,10 @@ class User extends Authenticatable
         'preferred_city_id',
         'preferred_job_type',
         'cv_path',
+        'cv_storage_path',
+        'cv_filename',
+        'cv_size_bytes',
+        'cv_mime_type',
         'cv_uploaded_at',
         'profile_completed_at',
     ];
@@ -44,6 +50,7 @@ class User extends Authenticatable
             'preferred_country_id' => 'integer',
             'preferred_state_id' => 'integer',
             'preferred_city_id' => 'integer',
+            'cv_size_bytes' => 'integer',
             'cv_uploaded_at' => 'datetime',
             'profile_completed_at' => 'datetime',
         ];
@@ -71,6 +78,11 @@ class User extends Authenticatable
             ->withTimestamps();
     }
 
+    public function emailTemplates(): HasMany
+    {
+        return $this->hasMany(EmailTemplate::class, 'user_id');
+    }
+
     public function isProfileComplete(): bool
     {
         return ! empty($this->phone)
@@ -80,7 +92,7 @@ class User extends Authenticatable
             && ! empty($this->preferred_job_type)
             && is_array($this->preferred_keywords)
             && count(array_filter($this->preferred_keywords)) > 0
-            && ! empty($this->cv_path)
+            && (! empty($this->cv_storage_path) || ! empty($this->cv_path))
             && ! empty($this->profile_completed_at);
     }
 }

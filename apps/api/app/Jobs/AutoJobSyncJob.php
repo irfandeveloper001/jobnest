@@ -6,11 +6,12 @@ use App\Models\Job;
 use App\Models\JobSource;
 use App\Models\SyncLog;
 use App\Models\User;
+use App\Services\JobSources\ArbeitnowClient;
+use App\Services\JobSources\JSearchClient;
+use App\Services\JobSources\RemotiveClient;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
@@ -51,7 +52,7 @@ class AutoJobSyncJob implements ShouldQueue
         }
 
         $sources = JobSource::query()
-            ->whereIn('key', ['arbeitnow', 'remotive'])
+            ->whereIn('key', ['arbeitnow', 'remotive', 'jsearch'])
             ->where('enabled', true)
             ->get(['id', 'key']);
 
@@ -71,9 +72,12 @@ class AutoJobSyncJob implements ShouldQueue
                 $bucket = [];
 
                 foreach ($keywords as $keyword) {
-                    $records = $source->key === 'arbeitnow'
-                        ? $this->fetchArbeitnowJobs((string) $keyword, $user)
-                        : $this->fetchRemotiveJobs((string) $keyword, $user);
+                    $records = match ($source->key) {
+                        'arbeitnow' => $this->fetchArbeitnowJobs((string) $keyword, $user),
+                        'remotive' => $this->fetchRemotiveJobs((string) $keyword, $user),
+                        'jsearch' => $this->fetchJsearchJobs((string) $keyword, $user),
+                        default => [],
+                    };
 
                     foreach ($records as $record) {
                         $composite = ($record['external_id'] ?? '').'|'.$source->id;
@@ -108,6 +112,7 @@ class AutoJobSyncJob implements ShouldQueue
                         'employment_type' => $this->toEmploymentType($record['employment_type'] ?? null),
                         'url' => $record['url'] ?? null,
                         'description' => $record['description'] ?? null,
+                        'tags' => $record['tags'] ?? null,
                         'posted_at' => $record['posted_at'] ?? null,
                         'raw_payload' => $record['raw_payload'] ?? null,
                     ];
@@ -170,93 +175,55 @@ class AutoJobSyncJob implements ShouldQueue
 
     private function fetchArbeitnowJobs(string $keyword, User $user): array
     {
-        $response = Http::acceptJson()
-            ->timeout(20)
-            ->retry(2, 200)
-            ->get('https://www.arbeitnow.com/api/job-board-api');
-
-        if (! $response->ok()) {
-            return [];
-        }
-
-        $rows = $response->json('data');
-        if (! is_array($rows)) {
-            return [];
-        }
-
-        $normalized = collect($rows)->map(function ($item) use ($user): array {
-            $jobTypes = is_array($item['job_types'] ?? null) ? implode(' ', $item['job_types']) : '';
-            $location = (string) ($item['location'] ?? '');
-            $remoteFlag = $item['remote'] ?? null;
-
-            return [
-                'external_id' => (string) ($item['slug'] ?? $item['id'] ?? md5((string) ($item['url'] ?? json_encode($item)))),
-                'title' => (string) ($item['title'] ?? ''),
-                'company_name' => (string) ($item['company_name'] ?? ''),
-                'location' => $location,
-                'remote_type' => $this->toRemoteType($remoteFlag === true ? 'remote' : $location),
-                'employment_type' => $this->toEmploymentType($jobTypes),
-                'url' => (string) ($item['url'] ?? ''),
-                'description' => (string) ($item['description'] ?? ''),
-                'posted_at' => $this->parsePostedAt($item['created_at'] ?? null),
-                'raw_payload' => $item,
-            ];
-        });
-
-        return $this->applyPreferenceFilter($normalized->all(), $keyword, $user);
+        $client = app(ArbeitnowClient::class);
+        $rows = $client->search($keyword);
+        return $this->applyPreferenceFilter($rows, $keyword, $user);
     }
 
     private function fetchRemotiveJobs(string $keyword, User $user): array
     {
-        $params = [];
-        if ($keyword !== '') {
-            $params['search'] = $keyword;
-        }
+        $client = app(RemotiveClient::class);
+        $rows = $client->search($keyword);
+        return $this->applyPreferenceFilter($rows, $keyword, $user);
+    }
 
-        $response = Http::acceptJson()
-            ->timeout(20)
-            ->retry(2, 200)
-            ->get('https://remotive.com/api/remote-jobs', $params);
-
-        if (! $response->ok()) {
+    private function fetchJsearchJobs(string $keyword, User $user): array
+    {
+        $rapidApiKey = trim((string) config('services.rapidapi.key', ''));
+        if ($rapidApiKey === '') {
             return [];
         }
 
-        $rows = $response->json('jobs');
-        if (! is_array($rows)) {
-            return [];
-        }
+        $countryIso2 = strtolower(trim((string) ($user->preferredCountry?->iso2 ?? 'pk')));
+        $client = app(JSearchClient::class);
+        $rows = $client->search([
+            'query' => $keyword !== '' ? $keyword : 'software engineer',
+            'country' => $countryIso2 !== '' ? $countryIso2 : 'pk',
+            'page' => 1,
+            'num_pages' => 1,
+        ]);
 
-        $normalized = collect($rows)->map(function ($item): array {
-            return [
-                'external_id' => (string) ($item['id'] ?? md5((string) ($item['url'] ?? json_encode($item)))),
-                'title' => (string) ($item['title'] ?? ''),
-                'company_name' => (string) ($item['company_name'] ?? ''),
-                'location' => (string) ($item['candidate_required_location'] ?? ''),
-                'remote_type' => $this->toRemoteType((string) ($item['candidate_required_location'] ?? 'remote')),
-                'employment_type' => $this->toEmploymentType((string) ($item['job_type'] ?? '')),
-                'url' => (string) ($item['url'] ?? ''),
-                'description' => (string) ($item['description'] ?? ''),
-                'posted_at' => $this->parsePostedAt($item['publication_date'] ?? null),
-                'raw_payload' => $item,
-            ];
-        });
-
-        return $this->applyPreferenceFilter($normalized->all(), $keyword, $user);
+        return $this->applyPreferenceFilter($rows, $keyword, $user);
     }
 
     private function applyPreferenceFilter(array $rows, string $keyword, User $user): array
     {
         $needle = Str::lower(trim($keyword));
-        $preferredLocationValue = $user->preferredCity?->name
-            ?? $user->preferredState?->name
-            ?? $user->preferredCountry?->name
-            ?? $user->preferred_location
-            ?? '';
-        $preferredLocation = Str::lower(trim((string) $preferredLocationValue));
+        $locationNeedles = collect([
+            $user->preferredCity?->name,
+            $user->preferredState?->name,
+            $user->preferredCountry?->name,
+        ])
+            ->filter(fn ($value) => filled($value))
+            ->map(fn ($value) => Str::lower(trim((string) $value)))
+            ->unique()
+            ->values()
+            ->all();
         $preferredType = Str::lower(trim((string) ($user->preferred_job_type ?? 'any')));
+        $includeRemoteRaw = data_get($user, 'include_remote');
+        $includeRemote = filter_var($includeRemoteRaw, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
 
-        return array_values(array_filter($rows, function (array $row) use ($needle, $preferredLocation, $preferredType): bool {
+        $filtered = array_values(array_filter($rows, function (array $row) use ($needle, $locationNeedles, $preferredType, $includeRemote): bool {
             $haystack = Str::lower(implode(' ', [
                 $row['title'] ?? '',
                 $row['company_name'] ?? '',
@@ -266,31 +233,72 @@ class AutoJobSyncJob implements ShouldQueue
 
             $keywordMatch = $needle === '' || Str::contains($haystack, $needle);
             $rowLocation = Str::lower((string) ($row['location'] ?? ''));
-            $rowRemoteType = Str::lower((string) ($row['remote_type'] ?? ''));
-            $locationMatch = $preferredLocation === ''
-                || Str::contains($rowLocation, $preferredLocation)
-                || ($preferredLocation === 'remote' && $rowRemoteType === 'remote');
+            $locationMatch = empty($locationNeedles)
+                || collect($locationNeedles)->contains(fn ($item) => Str::contains($rowLocation, $item));
 
             $employment = Str::lower((string) ($row['employment_type'] ?? 'unknown'));
             $typeMatch = $preferredType === ''
                 || $preferredType === 'any'
+                || $employment === 'unknown'
                 || Str::contains($employment, str_replace('-', '_', $preferredType));
 
-            return $keywordMatch && $locationMatch && $typeMatch;
+            $remoteType = $this->toRemoteType($row['remote_type'] ?? $row['location'] ?? null);
+            $remoteMatch = $includeRemote !== false || $remoteType !== 'remote';
+
+            return $keywordMatch && $locationMatch && $typeMatch && $remoteMatch;
         }));
-    }
 
-    private function parsePostedAt(mixed $value): ?string
-    {
-        if (! $value) {
-            return null;
+        if (! empty($filtered)) {
+            return $filtered;
         }
 
-        try {
-            return Carbon::parse($value)->toDateTimeString();
-        } catch (Throwable) {
-            return null;
+        // If user has selected preferred location, keep results scoped to that location hierarchy.
+        if (! empty($locationNeedles)) {
+            return [];
         }
+
+        // Relax location constraints first to avoid empty results for narrow city-only matches.
+        $byKeywordAndType = array_values(array_filter($rows, function (array $row) use ($needle, $preferredType, $includeRemote): bool {
+            $haystack = Str::lower(implode(' ', [
+                $row['title'] ?? '',
+                $row['company_name'] ?? '',
+                $row['location'] ?? '',
+                $row['description'] ?? '',
+            ]));
+
+            $keywordMatch = $needle === '' || Str::contains($haystack, $needle);
+            $employment = Str::lower((string) ($row['employment_type'] ?? 'unknown'));
+            $typeMatch = $preferredType === ''
+                || $preferredType === 'any'
+                || $employment === 'unknown'
+                || Str::contains($employment, str_replace('-', '_', $preferredType));
+
+            $remoteType = $this->toRemoteType($row['remote_type'] ?? $row['location'] ?? null);
+            $remoteMatch = $includeRemote !== false || $remoteType !== 'remote';
+
+            return $keywordMatch && $typeMatch && $remoteMatch;
+        }));
+
+        if (! empty($byKeywordAndType)) {
+            return $byKeywordAndType;
+        }
+
+        $byTypeOnly = array_values(array_filter($rows, function (array $row) use ($preferredType, $includeRemote): bool {
+            $employment = Str::lower((string) ($row['employment_type'] ?? 'unknown'));
+            $remoteType = $this->toRemoteType($row['remote_type'] ?? $row['location'] ?? null);
+            $remoteMatch = $includeRemote !== false || $remoteType !== 'remote';
+
+            return $remoteMatch && ($preferredType === ''
+                || $preferredType === 'any'
+                || $employment === 'unknown'
+                || Str::contains($employment, str_replace('-', '_', $preferredType)));
+        }));
+
+        if (! empty($byTypeOnly)) {
+            return $byTypeOnly;
+        }
+
+        return $rows;
     }
 
     private function toEmploymentType(?string $raw): string

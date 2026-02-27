@@ -35,4 +35,15 @@ return [
         ],
     ],
 
+    'rapidapi' => [
+        'key' => env('RAPIDAPI_KEY'),
+        'host' => env('RAPIDAPI_HOST', 'jsearch.p.rapidapi.com'),
+        'base_url' => env('RAPIDAPI_BASE_URL', 'https://jsearch.p.rapidapi.com'),
+    ],
+
+    'firebase' => [
+        'project_id' => env('FIREBASE_PROJECT_ID'),
+        'service_account_json' => env('FIREBASE_SERVICE_ACCOUNT_JSON'),
+    ],
+
 ];

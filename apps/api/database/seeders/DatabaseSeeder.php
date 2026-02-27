@@ -19,5 +19,11 @@ class DatabaseSeeder extends Seeder
                 LocationsSeeder::class,
             ]);
         }
+
+        if (app()->environment('local')) {
+            $this->call([
+                JobDemoSeeder::class,
+            ]);
+        }
     }
 }

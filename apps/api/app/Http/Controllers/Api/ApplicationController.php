@@ -3,8 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\StoreApplicationNoteRequest;
+use App\Http\Requests\StoreApplicationStageRequest;
 use App\Jobs\SendApplicationEmailJob;
 use App\Models\Application;
+use App\Models\ApplicationEvent;
+use App\Models\ApplicationStage;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,6 +19,7 @@ class ApplicationController extends Controller
     {
         $validated = $request->validate([
             'q' => ['nullable', 'string', 'max:255'],
+            'stage' => ['nullable', 'string', 'max:32'],
             'status' => ['nullable', 'in:all,submitted,emailed,replied,queued,sent,failed'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
@@ -41,6 +46,21 @@ class ApplicationController extends Controller
                             ->orWhere('company_name', 'like', "%{$q}%");
                     });
             });
+        }
+
+        if (! empty($validated['stage']) && $validated['stage'] !== 'all') {
+            $stageKey = $validated['stage'];
+            $stageExists = ApplicationStage::query()->where('key', $stageKey)->exists();
+            if (! $stageExists) {
+                return response()->json([
+                    'message' => 'The selected stage is invalid.',
+                    'errors' => [
+                        'stage' => ['The selected stage is invalid.'],
+                    ],
+                ], 422);
+            }
+
+            $query->where('stage_key', $stageKey);
         }
 
         if (! empty($validated['status']) && $validated['status'] !== 'all') {
@@ -73,9 +93,16 @@ class ApplicationController extends Controller
             ->orderByDesc('id')
             ->paginate($perPage, ['*'], 'page', $page);
 
-        $applications = $paginator->getCollection()->map(function (Application $application): array {
+        $stages = ApplicationStage::query()
+            ->orderBy('sort_order')
+            ->get(['key', 'label'])
+            ->mapWithKeys(fn (ApplicationStage $stage) => [$stage->key => $stage->label])
+            ->all();
+
+        $applications = $paginator->getCollection()->map(function (Application $application) use ($stages): array {
             $publicStatus = $this->toPublicStatus($application);
             $lastActivity = $this->buildLastActivity($application, $publicStatus);
+            $stageKey = $application->stage_key ?: 'saved';
 
             return [
                 'id' => $application->id,
@@ -87,6 +114,10 @@ class ApplicationController extends Controller
                 'full_name' => $application->full_name,
                 'email' => $application->email,
                 'status' => $publicStatus,
+                'stage' => [
+                    'key' => $stageKey,
+                    'label' => $stages[$stageKey] ?? ucfirst($stageKey),
+                ],
                 'created_at' => optional($application->created_at)->toISOString(),
                 'last_activity' => $lastActivity,
             ];
@@ -100,18 +131,28 @@ class ApplicationController extends Controller
                 'total' => $paginator->total(),
                 'last_page' => $paginator->lastPage(),
             ],
+            'stages' => ApplicationStage::query()
+                ->orderBy('sort_order')
+                ->get(['key', 'label', 'sort_order']),
         ]);
     }
 
     public function show(Request $request, Application $application): JsonResponse
     {
-        $user = $request->user();
-        if ($user->role !== 'admin' && $application->user_id !== $user->id) {
-            abort(404);
-        }
+        $this->assertAccessibleBy($request, $application);
 
-        $application->load(['job:id,title,company_name,location,status', 'emailLogs:id,application_id,status,sent_at,created_at']);
+        $application->load([
+            'job:id,title,company_name,location,status',
+            'emailLogs:id,application_id,status,sent_at,created_at',
+            'events' => fn ($query) => $query->orderByDesc('created_at'),
+            'followups' => fn ($query) => $query->orderBy('due_at'),
+        ]);
+
         $publicStatus = $this->toPublicStatus($application);
+        $availableStages = ApplicationStage::query()
+            ->orderBy('sort_order')
+            ->get(['key', 'label', 'sort_order']);
+        $stageLabel = $availableStages->firstWhere('key', $application->stage_key)?->label ?? ucfirst((string) $application->stage_key);
 
         return response()->json([
             'data' => [
@@ -127,10 +168,31 @@ class ApplicationController extends Controller
                 'phone' => $application->phone,
                 'cover_note' => $application->cover_note,
                 'status' => $publicStatus,
+                'stage' => [
+                    'key' => $application->stage_key ?: 'saved',
+                    'label' => $stageLabel,
+                ],
                 'created_at' => optional($application->created_at)->toISOString(),
                 'submitted_at' => optional($application->submitted_at)->toISOString(),
                 'emailed_at' => optional($application->emailed_at)->toISOString(),
                 'last_activity' => $this->buildLastActivity($application, $publicStatus),
+                'events' => $application->events->map(function (ApplicationEvent $event): array {
+                    return [
+                        'id' => $event->id,
+                        'type' => $event->type,
+                        'payload' => $event->payload ?? [],
+                        'created_at' => optional($event->created_at)->toISOString(),
+                    ];
+                })->values(),
+                'followups' => $application->followups->map(function ($followup): array {
+                    return [
+                        'id' => $followup->id,
+                        'status' => $followup->status,
+                        'due_at' => optional($followup->due_at)->toISOString(),
+                        'note' => $followup->note,
+                    ];
+                })->values(),
+                'available_stages' => $availableStages,
             ],
         ]);
     }
@@ -158,7 +220,18 @@ class ApplicationController extends Controller
             'cover_note' => $validated['cover_note'] ?? null,
             'cv_path' => $cvPath,
             'status' => 'queued',
+            'stage_key' => 'applied',
             'submitted_at' => now(),
+        ]);
+
+        ApplicationEvent::create([
+            'application_id' => $application->id,
+            'type' => 'stage_change',
+            'payload' => [
+                'from' => 'saved',
+                'to' => 'applied',
+                'changed_by' => $user->id,
+            ],
         ]);
 
         SendApplicationEmailJob::dispatch($application->id)->onQueue('default');
@@ -167,6 +240,70 @@ class ApplicationController extends Controller
             'message' => 'Application submitted and queued for delivery.',
             'data' => $application,
         ], 201);
+    }
+
+    public function updateStage(StoreApplicationStageRequest $request, Application $application): JsonResponse
+    {
+        $this->assertAccessibleBy($request, $application);
+        $user = $request->user();
+        $nextStage = $request->validated('stage_key');
+        $previousStage = $application->stage_key ?: 'saved';
+
+        if ($nextStage !== $previousStage) {
+            $application->update(['stage_key' => $nextStage]);
+
+            ApplicationEvent::create([
+                'application_id' => $application->id,
+                'type' => 'stage_change',
+                'payload' => [
+                    'from' => $previousStage,
+                    'to' => $nextStage,
+                    'changed_by' => $user->id,
+                ],
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Application stage updated.',
+            'data' => [
+                'application_id' => $application->id,
+                'stage_key' => $application->fresh()->stage_key,
+            ],
+        ]);
+    }
+
+    public function addNote(StoreApplicationNoteRequest $request, Application $application): JsonResponse
+    {
+        $this->assertAccessibleBy($request, $application);
+        $user = $request->user();
+
+        $event = ApplicationEvent::create([
+            'application_id' => $application->id,
+            'type' => 'note',
+            'payload' => [
+                'text' => $request->validated('text'),
+                'author_id' => $user->id,
+                'author_name' => $user->name,
+            ],
+        ]);
+
+        return response()->json([
+            'message' => 'Note added.',
+            'data' => [
+                'id' => $event->id,
+                'type' => $event->type,
+                'payload' => $event->payload ?? [],
+                'created_at' => optional($event->created_at)->toISOString(),
+            ],
+        ], 201);
+    }
+
+    private function assertAccessibleBy(Request $request, Application $application): void
+    {
+        $user = $request->user();
+        if ($user->role !== 'admin' && $application->user_id !== $user->id) {
+            abort(404);
+        }
     }
 
     private function toPublicStatus(Application $application): string
@@ -194,18 +331,18 @@ class ApplicationController extends Controller
 
         if ($latestLog) {
             if ($latestLog->status === 'sent') {
-                return 'Sent email';
+                return 'Email sent';
             }
             if ($latestLog->status === 'failed') {
-                return 'Delivery failed';
+                return 'Email delivery failed';
             }
-            return 'Queued email';
+            return 'Email queued';
         }
 
         return match ($publicStatus) {
             'replied' => 'Reply received',
-            'emailed' => 'Sent email',
-            default => 'Submitted application',
+            'emailed' => 'Email sent',
+            default => 'Application submitted',
         };
     }
 }
